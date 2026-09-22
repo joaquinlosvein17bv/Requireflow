@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { Database } from "bun:sqlite";
@@ -26,11 +27,12 @@ export function resolveUiDirectory(customDir?: string): string {
   if (customDir && fs.existsSync(customDir)) {
     return customDir;
   }
-  // Try src/ui or relative to current file
+  // Try src/ui or relative to current file or global home config
   const candidates = [
     path.resolve(process.cwd(), "src", "ui"),
     path.resolve(import.meta.dir, "..", "ui"),
     path.resolve(process.cwd(), "public"),
+    path.join(os.homedir(), ".requireflow", "ui"),
   ];
 
   for (const candidate of candidates) {
