@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RequireFlow — Local-First Task & Lifecycle Engine</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+</head>
+<body>
+  <div id="app" class="app-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <span class="logo-icon">⚡</span>
+          <span class="logo-text">RequireFlow</span>
+        </div>
+        <span class="badge-tag">Local-First</span>
+      </div>
+
+      <!-- Project Switcher -->
+      <div class="project-selector-container">
+        <label for="projectSelect" class="section-label">PROYECTO ACTIVO</label>
+        <div class="select-wrapper">
+          <select id="projectSelect" class="form-select"></select>
+          <button id="btnNewProject" class="btn-icon" title="Nuevo Proyecto">+</button>
+        </div>
+        <div id="projectRootPath" class="project-meta-path">...</div>
+      </div>
+
+      <!-- Main Navigation -->
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-tab="kanban">
+          <span class="nav-icon">📋</span>
+          <span class="nav-label">Tablero Kanban</span>
+        </button>
+        <button class="nav-item" data-tab="backlog">
+          <span class="nav-icon">📝</span>
+          <span class="nav-label">Backlog & Secciones</span>
+        </button>
+        <button class="nav-item" data-tab="history">
+          <span class="nav-icon">📜</span>
+          <span class="nav-label">Historial Permanente</span>
+        </button>
+        <button class="nav-item" data-tab="metrics">
+          <span class="nav-icon">⚡</span>
+          <span class="nav-label">Eficiencia & Métricas</span>
+        </button>
+        <button class="nav-item" data-tab="projects">
+          <span class="nav-icon">📂</span>
+          <span class="nav-label">Gestor de Proyectos</span>
+        </button>
+      </nav>
+
+      <!-- Sidebar Footer -->
+      <div class="sidebar-footer">
+        <button id="themeToggle" class="btn-secondary btn-sm" title="Cambiar Tema">
+          <span id="themeIcon">☀️</span> <span id="themeText">Modo Claro</span>
+        </button>
+        <div class="runtime-info">Bun v1.3 • SQLite WAL</div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top Bar -->
+      <header class="top-bar">
+        <div class="top-bar-left">
+          <h1 id="currentTabTitle" class="tab-title">Tablero Kanban</h1>
+          <div id="sectionFilterBar" class="section-chips"></div>
+        </div>
+        <div class="top-bar-right">
+          <button id="btnOpenNewTask" class="btn-primary">
+            <span>+ Nueva Tarea</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Views Container -->
+      <div class="view-viewport">
+        <!-- 1. Kanban View -->
+        <section id="viewKanban" class="view-panel active">
+          <div class="kanban-grid">
+            <!-- Por Hacer (To Do) -->
+            <div class="kanban-column" id="colTodo" data-status="todo">
+              <div class="column-header">
+                <div class="col-title-group">
+                  <span class="status-dot dot-todo"></span>
+                  <h2>Por Hacer</h2>
+                  <span id="countTodo" class="col-count">0</span>
+                </div>
+              </div>
+              <div class="cards-list" id="listTodo"></div>
+            </div>
+
+            <!-- En Progreso (In Progress) -->
+            <div class="kanban-column" id="colInProgress" data-status="in_progress">
+              <div class="column-header">
+                <div class="col-title-group">
+                  <span class="status-dot dot-in-progress"></span>
+                  <h2>En Progreso</h2>
+                  <span id="countInProgress" class="col-count">0</span>
+                </div>
+              </div>
+              <div class="cards-list" id="listInProgress"></div>
+            </div>
+
+            <!-- Completadas Recientes (Done) + Archival Flush Button -->
+            <div class="kanban-column" id="colDone" data-status="done">
+              <div class="column-header">
+                <div class="col-title-group">
+                  <span class="status-dot dot-done"></span>
+                  <h2>Completadas Recientes</h2>
+                  <span id="countDone" class="col-count">0</span>
+                </div>
+                <button id="btnArchiveDone" class="btn-archive" title="Mover todas las completadas al historial permanente">
+                  <span>📦 Archivar (<span id="archiveCountBadge">0</span>)</span>
+                </button>
+              </div>
+              <div class="cards-list" id="listDone"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. Backlog View -->
+        <section id="viewBacklog" class="view-panel">
+          <div class="backlog-container">
+            <div class="backlog-toolbar">
+              <div class="search-box">
+                <input type="text" id="backlogSearchInput" placeholder="Filtrar tareas del backlog...">
+              </div>
+              <button id="btnNewSection" class="btn-secondary btn-sm">+ Nueva Sección</button>
+            </div>
+            <div id="backlogSectionsList" class="backlog-sections"></div>
+          </div>
+        </section>
+
+        <!-- 3. History View -->
+        <section id="viewHistory" class="view-panel">
+          <div class="history-container">
+            <div class="history-toolbar">
+              <div class="search-box fts-search">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="historySearchInput" placeholder="Búsqueda Full-Text (FTS5) en títulos, notas y resoluciones...">
+              </div>
+              <div class="history-stats-pill">
+                Total Archivadas: <strong id="historyTotalCount">0</strong>
+              </div>
+            </div>
+            <div class="history-table-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Tipo</th>
+                    <th>Prioridad</th>
+                    <th>Título</th>
+                    <th>Sección</th>
+                    <th>Tiempo de Ciclo</th>
+                    <th>Notas de Solución</th>
+                    <th>Archivado el</th>
+                  </tr>
+                </thead>
+                <tbody id="historyTableBody">
+                  <tr><td colspan="7" class="empty-state">No hay tareas archivadas en el historial.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div id="historyPagination" class="pagination-controls"></div>
+          </div>
+        </section>
+
+        <!-- 4. Efficiency & Metrics View -->
+        <section id="viewMetrics" class="view-panel">
+          <div class="metrics-container">
+            <!-- KPI Cards -->
+            <div class="kpi-grid">
+              <div class="kpi-card">
+                <div class="kpi-icon">⏱️</div>
+                <div class="kpi-label">Tiempo Promedio de Ciclo</div>
+                <div class="kpi-value" id="kpiAvgCycle">0s</div>
+                <div class="kpi-sub">Desde 'En Progreso' a 'Completada'</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-icon">🚀</div>
+                <div class="kpi-label">Lead Time Promedio</div>
+                <div class="kpi-value" id="kpiAvgLead">0s</div>
+                <div class="kpi-sub">Desde creación a resolución final</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-icon">🐛</div>
+                <div class="kpi-label">Velocidad de Bugfix</div>
+                <div class="kpi-value" id="kpiBugfixVelocity">0s</div>
+                <div class="kpi-sub">Tiempo medio de resolución de errores</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-icon">✅</div>
+                <div class="kpi-label">Throughput Total</div>
+                <div class="kpi-value" id="kpiThroughputAll">0</div>
+                <div class="kpi-sub">Hoy: <span id="kpiTodayCount">0</span> • Esta semana: <span id="kpiWeekCount">0</span></div>
+              </div>
+            </div>
+
+            <!-- Distribution & Throughput Charts -->
+            <div class="charts-grid">
+              <div class="chart-card">
+                <h3>Distribución de Trabajo</h3>
+                <div id="distributionBars" class="distribution-container"></div>
+              </div>
+              <div class="chart-card">
+                <h3>Tendencia de Entregas (Últimos 7 días)</h3>
+                <div id="velocityTimeline" class="timeline-container"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 5. Projects Manager View -->
+        <section id="viewProjects" class="view-panel">
+          <div class="projects-manager-container">
+            <div class="projects-manager-header">
+              <h2>Proyectos Registrados</h2>
+              <button id="btnCreateProjectModal" class="btn-primary">+ Registrar Proyecto</button>
+            </div>
+            <div id="projectsGrid" class="projects-card-grid"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modals -->
+  <!-- Modal: New Task -->
+  <div id="modalTask" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 id="modalTaskTitle">Nueva Tarea</h3>
+        <button class="modal-close" data-close-modal="modalTask">&times;</button>
+      </div>
+      <form id="formTask" class="modal-body">
+        <input type="hidden" id="taskIdField">
+        <div class="form-group">
+          <label for="taskTitleInput">Título de la Tarea / Bugfix *</label>
+          <input type="text" id="taskTitleInput" required class="form-input" placeholder="p.ej. Arreglar N+1 en consulta de usuarios">
+        </div>
+        <div class="form-row">
+          <div class="form-group col-half">
+            <label for="taskTypeSelect">Tipo</label>
+            <select id="taskTypeSelect" class="form-select">
+              <option value="feature">✨ Feature</option>
+              <option value="bugfix">🐛 Bugfix</option>
+              <option value="chore">⚙️ Chore</option>
+              <option value="refactor">♻️ Refactor</option>
+              <option value="debt">💳 Debt</option>
+            </select>
+          </div>
+          <div class="form-group col-half">
+            <label for="taskPrioritySelect">Prioridad</label>
+            <select id="taskPrioritySelect" class="form-select">
+              <option value="low">Baja (Low)</option>
+              <option value="medium" selected>Media (Medium)</option>
+              <option value="high">Alta (High)</option>
+              <option value="blocker">🚨 Bloqueante (Blocker)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group col-half">
+            <label for="taskSectionSelect">Sección Temática</label>
+            <select id="taskSectionSelect" class="form-select"></select>
+          </div>
+          <div class="form-group col-half">
+            <label for="taskStoryPointsInput">Story Points (Estimación)</label>
+            <input type="number" id="taskStoryPointsInput" min="0" max="100" class="form-input" placeholder="1, 2, 3, 5, 8...">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="taskDescriptionInput">Descripción / Contexto</label>
+          <textarea id="taskDescriptionInput" class="form-textarea" rows="3" placeholder="Detalles de implementación o pasos para reproducir..."></textarea>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" data-close-modal="modalTask">Cancelar</button>
+          <button type="submit" class="btn-primary">Guardar Tarea</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Complete Task Resolution Notes -->
+  <div id="modalCompleteTask" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Completar Tarea</h3>
+        <button class="modal-close" data-close-modal="modalCompleteTask">&times;</button>
+      </div>
+      <form id="formCompleteTask" class="modal-body">
+        <input type="hidden" id="completeTaskIdField">
+        <p id="completeTaskTitleNotice" class="modal-notice"></p>
+        <div class="form-group">
+          <label for="completeTaskNotesInput">Notas de Solución / Implementación</label>
+          <textarea id="completeTaskNotesInput" class="form-textarea" rows="3" placeholder="¿Cómo se solucionó o implementó? (Se archivará para contexto del agente y equipo)"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" data-close-modal="modalCompleteTask">Cancelar</button>
+          <button type="submit" class="btn-primary">Marcar como Completada</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: New Section -->
+  <div id="modalSection" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Nueva Sección</h3>
+        <button class="modal-close" data-close-modal="modalSection">&times;</button>
+      </div>
+      <form id="formSection" class="modal-body">
+        <div class="form-group">
+          <label for="sectionNameInput">Nombre de la Sección *</label>
+          <input type="text" id="sectionNameInput" required class="form-input" placeholder="p.ej. Autenticación, Base de Datos, UI">
+        </div>
+        <div class="form-group">
+          <label for="sectionColorInput">Color Identificador</label>
+          <div class="color-picker-row">
+            <input type="color" id="sectionColorInput" value="#6366f1" class="form-color">
+            <span class="color-help">Selecciona un color distintivo para las etiquetas</span>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" data-close-modal="modalSection">Cancelar</button>
+          <button type="submit" class="btn-primary">Crear Sección</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: New Project -->
+  <div id="modalProject" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Registrar Proyecto</h3>
+        <button class="modal-close" data-close-modal="modalProject">&times;</button>
+      </div>
+      <form id="formProject" class="modal-body">
+        <div class="form-group">
+          <label for="projectNameInput">Nombre del Proyecto *</label>
+          <input type="text" id="projectNameInput" required class="form-input" placeholder="p.ej. Backend API, Mi App Móvil">
+        </div>
+        <div class="form-group">
+          <label for="projectDescInput">Descripción</label>
+          <input type="text" id="projectDescInput" class="form-input" placeholder="Resumen del repositorio o servicio">
+        </div>
+        <div class="form-group">
+          <label for="projectPathInput">Ruta Local (Directorio Raíz)</label>
+          <input type="text" id="projectPathInput" class="form-input" placeholder="C:/proyectos/mi-app o /home/user/app">
+        </div>
+        <div class="form-group">
+          <label for="projectThresholdInput">Umbral de Auto-Archivado (Horas)</label>
+          <input type="number" id="projectThresholdInput" class="form-input" value="24" min="1" max="720">
+          <small class="form-help">Las tareas en 'Completadas' se archivarán al historial tras estas horas de inactividad</small>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" data-close-modal="modalProject">Cancelar</button>
+          <button type="submit" class="btn-primary">Registrar Proyecto</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Client Application -->
+  <script src="/app.js"></script>
+</body>
+</html>
