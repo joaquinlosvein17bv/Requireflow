@@ -106,6 +106,7 @@ When interacting with tasks in any repository where RequireFlow is active:
 
 | Phase | Tool to Call | Purpose |
 | :--- | :--- | :--- |
+| **0. Project & Context Guard** | `rf_project_list` / `rf_project_detect` | **Mandatory**: Verify if `cwd` is linked to an existing project. If creating from scratch in a new folder, notify the user. If user asks for features but `cwd` is not linked, list existing projects and ask whether to add to an existing backlog or initialize a new one. |
 | **1. Intake** | `rf_task_add` | Create backlog item with priority (`blocker`, `high`, `medium`, `low`) and type (`feature`, `bugfix`, `chore`, `refactor`). |
 | **2. Autonomous Selection** | `rf_task_next` | Pull highest priority pending work (`blocker > high > medium > low`). |
 | **3. Before Coding** | `rf_task_start` | **Mandatory**: Start task clock to record `started_at` in UTC. |
@@ -117,13 +118,14 @@ When interacting with tasks in any repository where RequireFlow is active:
 
 ## 🛠️ Complete MCP Tool Reference
 
-1. `rf_project_detect`: Detects git repository or directory root.
-2. `rf_task_list`: Lists tasks with filters (`status`, `sectionId`, `priority`, `type`).
-3. `rf_task_next`: Fetches the highest priority pending item.
-4. `rf_task_add`: Creates task in backlog.
-5. `rf_task_start`: Starts task and timestamps `started_at`.
-6. `rf_task_complete`: Completes task, timestamps `completed_at`, calculates duration, stores notes.
-7. `rf_task_update`: Modifies title, priority, section, or notes.
-8. `rf_archive_run`: Manually flushes completed items to permanent history.
-9. `rf_history_search`: FTS5 semantic search in past work.
-10. `rf_efficiency_stats`: Computes average cycle time, lead time, throughput, and bugfix velocity.
+1. `rf_project_detect`: Detects git repository or directory root, returning `is_directory_linked`.
+2. `rf_project_list`: Lists all registered projects with active task counts and root paths.
+3. `rf_task_list`: Lists tasks with filters (`status`, `sectionId`, `priority`, `type`).
+4. `rf_task_next`: Fetches the highest priority pending item.
+5. `rf_task_add`: Creates task in backlog.
+6. `rf_task_start`: Starts task and timestamps `started_at`.
+7. `rf_task_complete`: Completes task, timestamps `completed_at`, calculates duration, stores notes.
+8. `rf_task_update`: Modifies title, priority, section, or notes.
+9. `rf_archive_run`: Manually flushes completed items to permanent history.
+10. `rf_history_search`: FTS5 semantic search in past work.
+11. `rf_efficiency_stats`: Computes average cycle time, lead time, throughput, and bugfix velocity.

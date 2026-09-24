@@ -1,8 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import path from "node:path";
 import { Database } from "bun:sqlite";
 import { getDatabase } from "../db/connection.ts";
-import { resolveCurrentProject, getProject } from "../domain/project.ts";
+import { resolveCurrentProject, getProject, listProjects } from "../domain/project.ts";
 import {
   createTask,
   getTask,
@@ -74,8 +75,28 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
       cwd: z.string().optional().describe("Working directory to detect project from"),
     },
     (args) => {
-      const project = resolveCurrentProject(args.cwd || process.cwd(), db);
-      return project;
+      const targetCwd = args.cwd || process.cwd();
+      const allProjects = listProjects(db);
+      const matched = allProjects.find(
+        (p) => p.root_path && path.resolve(p.root_path) === path.resolve(targetCwd)
+      );
+      const project = resolveCurrentProject(targetCwd, db);
+      return {
+        ...project,
+        is_directory_linked: Boolean(matched),
+      };
+    }
+  );
+
+  // 1b. rf_project_list / project_list
+  registerDual(
+    "rf_project_list",
+    "project_list",
+    "List all registered projects in RequireFlow with their IDs, names, root paths, and active task counts",
+    {},
+    () => {
+      const projects = listProjects(db);
+      return projects;
     }
   );
 
