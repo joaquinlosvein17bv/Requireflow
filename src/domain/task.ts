@@ -8,6 +8,35 @@ export type TaskType = "feature" | "fix" | "bugfix" | "chore" | "refactor" | "de
 export type TaskPriority = "low" | "medium" | "high" | "blocker";
 export type TaskStatus = "backlog" | "todo" | "in_progress" | "done" | "archived";
 
+export const TASK_TYPES: TaskType[] = [
+  "feature",
+  "fix",
+  "bugfix",
+  "chore",
+  "refactor",
+  "debt",
+];
+export const TASK_PRIORITIES: TaskPriority[] = ["low", "medium", "high", "blocker"];
+export const TASK_STATUSES: TaskStatus[] = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "done",
+  "archived",
+];
+
+export function isTaskType(value: unknown): value is TaskType {
+  return typeof value === "string" && TASK_TYPES.includes(value as TaskType);
+}
+
+export function isTaskPriority(value: unknown): value is TaskPriority {
+  return typeof value === "string" && TASK_PRIORITIES.includes(value as TaskPriority);
+}
+
+export function isTaskStatus(value: unknown): value is TaskStatus {
+  return typeof value === "string" && TASK_STATUSES.includes(value as TaskStatus);
+}
+
 /** Raised when a task operation would break a domain invariant. */
 export class TaskValidationError extends Error {
   constructor(message: string) {

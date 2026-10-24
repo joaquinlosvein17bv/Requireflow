@@ -8,19 +8,24 @@ import {
   getNextTask,
   startTask,
   completeTask,
-  type TaskType,
-  type TaskPriority,
 } from "../domain/task.ts";
 import { archiveDoneTasks } from "../domain/archive.ts";
 import { calculateProjectMetrics, formatDuration } from "../domain/efficiency.ts";
 import { flagToBoolean, flagToNumber } from "./flags.ts";
 import { startHttpServer } from "../server/http.ts";
 import { startMcpServer } from "../mcp/server.ts";
+import { isTaskType, isTaskPriority, TASK_TYPES, TASK_PRIORITIES } from "../domain/task.ts";
 
 export interface ParsedArgs {
   command: string;
   positionals: string[];
   flags: Record<string, string | boolean>;
+}
+
+/** Reports a user-facing error and marks the process as failed. */
+function fail(message: string): void {
+  console.error(`Error: ${message}`);
+  process.exitCode = 1;
 }
 
 export function parseArgs(rawArgs: string[]): ParsedArgs {
@@ -56,7 +61,11 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
       }
 
       const next = args[i + 1];
-      if (next !== undefined && !next.startsWith("-")) {
+      // A negative number is a value, not the start of another flag.
+      const nextIsValue =
+        next !== undefined && (!next.startsWith("-") || /^-\d+(\.\d+)?$/.test(next));
+
+      if (nextIsValue) {
         flags[raw] = next;
         i += 2;
       } else {
@@ -75,7 +84,8 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
 export async function runCli(argv: string[] = process.argv, db: Database = getDatabase()) {
   const { command, positionals, flags } = parseArgs(argv);
 
-  switch (command.toLowerCase()) {
+  try {
+    switch (command.toLowerCase()) {
     case "init": {
       const project = resolveCurrentProject(process.cwd(), db);
       console.log(`[RequireFlow] Project initialized: "${project.name}" (ID: ${project.id})`);
@@ -118,14 +128,25 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
     case "add": {
       const title = positionals[0] || (flags["title"] as string);
       if (!title) {
-        console.error("Error: Task title is required. Usage: requireflow add \"Task Title\" [-t type] [-p priority]");
-        process.exitCode = 1;
+        fail('Task title is required. Usage: requireflow add "Task Title" [-t type] [-p priority]');
+        return;
+      }
+
+      const typeArg = String(flags["t"] || flags["type"] || "feature");
+      if (!isTaskType(typeArg)) {
+        fail(`Invalid type "${typeArg}". Allowed: ${TASK_TYPES.join(", ")}.`);
+        return;
+      }
+
+      const priorityArg = String(flags["p"] || flags["priority"] || "medium");
+      if (!isTaskPriority(priorityArg)) {
+        fail(`Invalid priority "${priorityArg}". Allowed: ${TASK_PRIORITIES.join(", ")}.`);
         return;
       }
 
       const project = resolveCurrentProject(process.cwd(), db);
-      const type = ((flags["t"] || flags["type"] || "feature") as TaskType);
-      const priority = ((flags["p"] || flags["priority"] || "medium") as TaskPriority);
+      const type = typeArg;
+      const priority = priorityArg;
       const desc = (flags["d"] || flags["desc"] || flags["description"]) as string | undefined;
       const sectionArg = (flags["s"] || flags["section"]) as string | undefined;
 
@@ -136,6 +157,12 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
           (s) => s.id === sectionArg || s.name.toLowerCase() === sectionArg.toLowerCase()
         );
         if (matched) sectionId = matched.id;
+        else {
+          fail(
+            `Unknown section "${sectionArg}". Available: ${sections.map((s) => s.name).join(", ")}.`
+          );
+          return;
+        }
       }
 
       const task = createTask(
@@ -200,8 +227,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
     case "start": {
       const taskIdArg = positionals[0];
       if (!taskIdArg) {
-        console.error("Error: Task ID required. Usage: requireflow start <task-id>");
-        process.exitCode = 1;
+        fail("Task ID required. Usage: requireflow start <task-id>");
         return;
       }
 
@@ -210,8 +236,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
       const matched = tasks.find((t) => t.id === taskIdArg || t.id.startsWith(taskIdArg));
 
       if (!matched) {
-        console.error(`Error: Task not found with ID starting with: ${taskIdArg}`);
-        process.exitCode = 1;
+        fail(`Task not found with ID starting with: ${taskIdArg}`);
         return;
       }
 
@@ -223,8 +248,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
     case "done": {
       const taskIdArg = positionals[0];
       if (!taskIdArg) {
-        console.error("Error: Task ID required. Usage: requireflow done <task-id> [-m notes]");
-        process.exitCode = 1;
+        fail("Task ID required. Usage: requireflow done <task-id> [-m notes]");
         return;
       }
 
@@ -233,8 +257,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
       const matched = tasks.find((t) => t.id === taskIdArg || t.id.startsWith(taskIdArg));
 
       if (!matched) {
-        console.error(`Error: Task not found with ID starting with: ${taskIdArg}`);
-        process.exitCode = 1;
+        fail(`Task not found with ID starting with: ${taskIdArg}`);
         return;
       }
 
@@ -265,8 +288,15 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
     }
 
     case "ui": {
-      const port = flags["port"] ? Number(flags["port"]) : undefined;
-      const server = await startHttpServer({ port, db });
+      const port = flagToNumber(flags["port"], { min: 1, max: 65535, label: "--port" });
+      const hostFlag = flags["host"];
+      if (typeof hostFlag === "string" && hostFlag.trim() === "") {
+        fail("Invalid --host: expected a hostname.");
+        return;
+      }
+      const host = typeof hostFlag === "string" ? hostFlag.trim() : undefined;
+
+      const server = await startHttpServer({ port, host, db });
       console.log(`Dashboard open at: http://${server.hostname}:${server.port}`);
       break;
     }
@@ -277,10 +307,11 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
     }
 
     case "stats": {
+      const days = flagToNumber(flags["days"], { min: 1, max: 3650, label: "--days" }) ?? 30;
       const project = resolveCurrentProject(process.cwd(), db);
-      const metrics = calculateProjectMetrics(project.id, 30, db);
+      const metrics = calculateProjectMetrics(project.id, days, db);
 
-      console.log(`\n=== Efficiency Metrics: ${project.name} (Last 30 Days) ===`);
+      console.log(`\n=== Efficiency Metrics: ${project.name} (Last ${days} Days) ===`);
       console.log(`Total Completed Tasks:  ${metrics.totalCompleted}`);
       console.log(`Active Remaining Tasks: ${metrics.totalActive}`);
       console.log(`Avg Cycle Time:         ${metrics.formattedAvgCycleTime}`);
@@ -294,9 +325,25 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
       break;
     }
 
-    case "help":
+    case "help": {
+      printHelp();
+      break;
+    }
+
     default: {
-      console.log(`
+      fail(`Unknown command "${command}". Run 'requireflow help' to see the available commands.`);
+      break;
+    }
+  }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Error: ${message}`);
+    process.exitCode = 1;
+  }
+}
+
+function printHelp(): void {
+  console.log(`
 RequireFlow — Local-First Task & Lifecycle Engine for Developers & AI Agents
 
 USAGE:
@@ -322,10 +369,9 @@ FLAGS:
   -m, --notes <notes>       Resolution summary notes
   --json                    Output in JSON format
   --port <port>             HTTP Server port (default: 4242)
+  --days <n>                Window for stats (default: 30)
+  --threshold <hours>       Archive age threshold; --force flushes immediately
 `);
-      break;
-    }
-  }
 }
 
 if (import.meta.main) {
