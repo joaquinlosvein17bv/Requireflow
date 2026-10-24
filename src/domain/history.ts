@@ -148,16 +148,3 @@ export function listHistory(
   };
 }
 
-export function getHistoryItem(
-  id: string,
-  db: Database = getDatabase()
-): HistoryItem | null {
-  return db
-    .query(`
-      SELECT h.*, p.name as project_name
-      FROM history h
-      JOIN projects p ON h.project_id = p.id
-      WHERE h.id = ?
-    `)
-    .get(id) as HistoryItem | null;
-}

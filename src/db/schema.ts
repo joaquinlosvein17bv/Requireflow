@@ -119,7 +119,9 @@ CREATE TRIGGER IF NOT EXISTS trg_history_au AFTER UPDATE ON history BEGIN
     );
 END;
 
--- Key-value system config
+-- Key-value system config.
+-- Reserved: no consumer yet. Kept because it ships in migration 1 and removing
+-- it would require a destructive migration with no benefit (RF-23).
 CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,

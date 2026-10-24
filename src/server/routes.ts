@@ -37,11 +37,6 @@ import { archiveDoneTasks } from "../domain/archive.ts";
 import { listHistory, searchHistory } from "../domain/history.ts";
 import { calculateProjectMetrics } from "../domain/efficiency.ts";
 
-export const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-RequireFlow-Token",
-};
-
 /** An error whose message is safe to return to the client. */
 class HttpError extends Error {
   readonly status: number;
