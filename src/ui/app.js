@@ -115,18 +115,41 @@ const state = {
   // --- Project Initialization ---
   async function loadProjects() {
     state.projects = await fetchAPI("/api/projects");
+
     if (state.projects.length === 0) {
-      // Auto-detect or initialize current project
-      const current = await fetchAPI("/api/projects/current");
-      state.projects = [current];
-      state.currentProject = current;
+      // Detection is read-only: it never registers a project behind the user's back.
+      const detected = await detectCurrentProject();
+      if (detected) {
+        state.projects = [detected];
+        state.currentProject = detected;
+      } else {
+        state.currentProject = null;
+        showToast("No hay proyecto vinculado. Creá uno desde el gestor de proyectos.", "error");
+      }
     } else if (!state.currentProject) {
       state.currentProject = state.projects[0];
     }
 
     renderProjectSelector();
+
+    if (!state.currentProject) {
+      const pathEl = document.getElementById("projectRootPath");
+      if (pathEl) pathEl.textContent = "Sin proyecto vinculado";
+      return;
+    }
+
     await loadProjectSections();
     await loadActiveTabData();
+  }
+
+  async function detectCurrentProject() {
+    try {
+      const res = await fetch("/api/projects/current");
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
   }
 
   function renderProjectSelector() {

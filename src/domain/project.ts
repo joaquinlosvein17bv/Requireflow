@@ -71,28 +71,39 @@ export function getProjectByRootKey(
 /**
  * Detects the project that owns a directory without creating anything.
  *
- * Exact root matches win. Inside a git repository the git root is the identity,
- * so `src/domain` resolves to its project and a nested checkout never inherits
- * an umbrella project registered on its parent directory. For plain
- * directories, the deepest registered root containing the path is used.
+ * 1. An exact root match on the directory itself always wins, so a project
+ *    registered at a plain folder is found even when an ancestor happens to be
+ *    a git repository.
+ * 2. A subdirectory of a registered repository resolves to that repository.
+ * 3. Otherwise the deepest registered root containing the directory is used,
+ *    but never across a git boundary: a nested checkout is its own project and
+ *    must not be claimed by an umbrella project registered on its parent.
  */
 export function detectProject(
   cwd: string = process.cwd(),
   db: Database = getDatabase()
 ): ProjectDetection {
+  const cwdPath = path.resolve(cwd);
+  const cwdKey = normalizeRootPath(cwdPath);
   const gitRoot = findGitRoot(cwd);
-  const rootPath = gitRoot || path.resolve(cwd);
-  const rootKey = normalizeRootPath(rootPath);
+  const gitKey = gitRoot ? normalizeRootPath(gitRoot) : null;
 
-  const exact = getProjectByRootKey(rootKey, db);
+  const exact = getProjectByRootKey(cwdKey, db);
   if (exact) {
-    return { project: exact, rootPath, rootKey, isLinked: true, source: "exact" };
+    return { project: exact, rootPath: cwdPath, rootKey: cwdKey, isLinked: true, source: "exact" };
   }
 
-  // A git root that is not registered is a different project, even if some
-  // registered root contains it on disk.
-  if (gitRoot) {
-    return { project: null, rootPath, rootKey, isLinked: false, source: "none" };
+  if (gitKey && gitKey !== cwdKey) {
+    const repository = getProjectByRootKey(gitKey, db);
+    if (repository) {
+      return {
+        project: repository,
+        rootPath: cwdPath,
+        rootKey: cwdKey,
+        isLinked: true,
+        source: "nested",
+      };
+    }
   }
 
   const candidates = db
@@ -103,7 +114,12 @@ export function detectProject(
   let bestLength = -1;
   for (const candidate of candidates) {
     const key = candidate.root_key;
-    if (!key || !isInsideRoot(rootKey, key)) continue;
+    if (!key || !isInsideRoot(cwdKey, key)) continue;
+
+    // A git repository between the candidate root and the directory means the
+    // directory belongs to that repository, not to the umbrella above it.
+    if (gitKey && gitKey !== key && isInsideRoot(gitKey, key)) continue;
+
     if (key.length > bestLength) {
       best = candidate;
       bestLength = key.length;
@@ -111,10 +127,10 @@ export function detectProject(
   }
 
   if (best) {
-    return { project: best, rootPath, rootKey, isLinked: true, source: "nested" };
+    return { project: best, rootPath: cwdPath, rootKey: cwdKey, isLinked: true, source: "nested" };
   }
 
-  return { project: null, rootPath, rootKey, isLinked: false, source: "none" };
+  return { project: null, rootPath: cwdPath, rootKey: cwdKey, isLinked: false, source: "none" };
 }
 
 /** Projects whose stored root is missing on disk, a symptom of old name collisions. */

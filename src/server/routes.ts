@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import fs from "node:fs";
+import nodePath from "node:path";
 import { getDatabase } from "../db/connection.ts";
 import {
   listProjects,
@@ -6,7 +8,7 @@ import {
   getProject,
   updateProject,
   deleteProject,
-  resolveCurrentProject,
+  detectProject,
 } from "../domain/project.ts";
 import {
   listSections,
@@ -71,6 +73,36 @@ function pathParam(path: string, pattern: RegExp): string | null {
   return value === undefined || value.length === 0 ? null : value;
 }
 
+type DirectoryValidation =
+  | { ok: true; path: string }
+  | { ok: false; error: string };
+
+/** Validates a directory supplied by a client before touching the database. */
+function validateDirectory(input: string): DirectoryValidation {
+  if (input.trim().length === 0) {
+    return { ok: false, error: "cwd must be a non-empty path" };
+  }
+  if (input.length > 4096) {
+    return { ok: false, error: "cwd must be shorter than 4096 characters" };
+  }
+  if (input.includes("\0")) {
+    return { ok: false, error: "cwd contains invalid characters" };
+  }
+
+  const resolved = nodePath.resolve(input);
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(resolved);
+  } catch {
+    return { ok: false, error: `Directory not found: ${resolved}` };
+  }
+  if (!stats.isDirectory()) {
+    return { ok: false, error: `Not a directory: ${resolved}` };
+  }
+
+  return { ok: true, path: resolved };
+}
+
 export async function handleApiRoute(
   req: Request,
   url: URL,
@@ -117,9 +149,39 @@ export async function handleApiRoute(
 
     if (path === "/api/projects/current") {
       if (method === "GET") {
-        const cwdParam = url.searchParams.get("cwd") || process.cwd();
-        const current = resolveCurrentProject(cwdParam, db);
-        return jsonResponse(current);
+        const cwdParam = url.searchParams.get("cwd");
+
+        // Detection is read-only: a GET must never register a project. The
+        // previous behaviour created one for any path that reached this route.
+        if (cwdParam !== null) {
+          const validation = validateDirectory(cwdParam);
+          if (!validation.ok) {
+            return errorResponse(validation.error, 400);
+          }
+        }
+
+        const target = cwdParam ?? process.cwd();
+        const detection = detectProject(target, db);
+
+        if (!detection.project) {
+          return jsonResponse(
+            {
+              error: "No project is registered for this directory",
+              detected_root: detection.rootPath,
+              root_key: detection.rootKey,
+              suggested_name: nodePath.basename(detection.rootPath) || "default-project",
+              hint: "Create it with POST /api/projects { name, rootPath } or `requireflow init`.",
+            },
+            404
+          );
+        }
+
+        return jsonResponse({
+          ...detection.project,
+          is_directory_linked: true,
+          detection_source: detection.source,
+          detected_root: detection.rootPath,
+        });
       }
     }
 
