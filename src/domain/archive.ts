@@ -55,7 +55,7 @@ export function archiveDoneTasks(
   const now = new Date().toISOString();
 
   const insertHistoryStmt = db.prepare(`
-    INSERT INTO history (
+    INSERT OR IGNORE INTO history (
       id, task_id, project_id, section_id, title, description,
       type, priority, notes, tags, started_at, completed_at,
       archived_at, cycle_time_seconds, total_cycle_time_ms

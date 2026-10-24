@@ -151,6 +151,30 @@ function migrateCanonicalTimeAndCycles(db: Database): void {
   }
 }
 
+/**
+ * One history row per task. Re-archiving used to append a second permanent row
+ * for the same task, inflating the changelog (RF-10). Duplicates are collapsed
+ * keeping the most recent snapshot.
+ */
+function migrateHistoryUniqueness(db: Database): void {
+  db.run(`
+    DELETE FROM history
+     WHERE rowid NOT IN (
+       SELECT rowid FROM (
+         SELECT rowid,
+                ROW_NUMBER() OVER (
+                  PARTITION BY task_id
+                  ORDER BY archived_at DESC, rowid DESC
+                ) AS position
+           FROM history
+       )
+       WHERE position = 1
+     )
+  `);
+
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_history_task_unique ON history(task_id)");
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -166,6 +190,11 @@ export const MIGRATIONS: Migration[] = [
     version: 3,
     name: "canonical_time_and_task_cycles",
     run: migrateCanonicalTimeAndCycles,
+  },
+  {
+    version: 4,
+    name: "history_one_row_per_task",
+    run: migrateHistoryUniqueness,
   },
 ];
 

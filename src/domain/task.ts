@@ -258,6 +258,90 @@ export function recordCycle(
   );
 }
 
+/** Legal status transitions. Anything else is a domain error, not a silent write. */
+export const LEGAL_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
+  backlog: ["todo", "in_progress", "done"],
+  todo: ["backlog", "in_progress", "done"],
+  in_progress: ["backlog", "todo", "done"],
+  done: ["backlog", "todo", "in_progress", "archived"],
+  archived: ["backlog", "todo", "in_progress"],
+};
+
+export function canTransition(from: TaskStatus, to: TaskStatus): boolean {
+  if (from === to) return true;
+  return LEGAL_TRANSITIONS[from].includes(to);
+}
+
+interface TransitionPlan {
+  fields: string[];
+  values: any[];
+  cycle: { startedAt: string; completedAt: string; cycleSeconds: number } | null;
+}
+
+/**
+ * Builds the column changes for a status transition.
+ *
+ * Leaving a terminal state (`done`/`archived`) clears the completion metadata so
+ * a reopened task never shows a stale duration or a `completed_at` while it is
+ * being worked on. Past durations stay in `task_cycles`.
+ */
+function planTransition(current: Task, next: TaskStatus, at: string): TransitionPlan {
+  if (next === current.status) {
+    return { fields: [], values: [], cycle: null };
+  }
+
+  if (!canTransition(current.status, next)) {
+    const allowed = LEGAL_TRANSITIONS[current.status];
+    throw new TaskValidationError(
+      `Illegal transition from '${current.status}' to '${next}' for task ${current.id}. Allowed next states: ${allowed.join(", ")}.`
+    );
+  }
+
+  const plan: TransitionPlan = {
+    fields: ["status = ?"],
+    values: [next],
+    cycle: null,
+  };
+
+  const isReopen =
+    (current.status === "done" || current.status === "archived") &&
+    next !== "done" &&
+    next !== "archived";
+
+  if (isReopen) {
+    plan.fields.push("completed_at = ?", "archived_at = ?", "cycle_time_seconds = ?");
+    plan.values.push(null, null, null);
+  }
+
+  if (next === "in_progress") {
+    plan.fields.push("started_at = ?");
+    plan.values.push(at);
+  } else if (isReopen) {
+    plan.fields.push("started_at = ?");
+    plan.values.push(null);
+  }
+
+  if (next === "done") {
+    const cycleSeconds = current.started_at
+      ? secondsBetween(current.started_at, at)
+      : 0;
+    plan.fields.push("completed_at = ?", "cycle_time_seconds = ?");
+    plan.values.push(at, cycleSeconds);
+    plan.cycle = {
+      startedAt: current.started_at ?? at,
+      completedAt: at,
+      cycleSeconds,
+    };
+  }
+
+  if (next === "archived") {
+    plan.fields.push("archived_at = ?");
+    plan.values.push(at);
+  }
+
+  return plan;
+}
+
 export function startTask(
   taskId: string,
   db: Database = getDatabase()
@@ -265,16 +349,15 @@ export function startTask(
   const current = getTask(taskId, db);
   if (!current) return null;
 
-  const nowStr = nowIso();
-  const startedAt = current.started_at || nowStr;
+  const at = nowIso();
+  const plan = planTransition(current, "in_progress", at);
+  if (plan.fields.length === 0) {
+    return current;
+  }
 
   db.run(
-    `UPDATE tasks 
-     SET status = 'in_progress', 
-         started_at = ?,
-         updated_at = ?
-     WHERE id = ?`,
-    [startedAt, nowStr, taskId]
+    `UPDATE tasks SET ${plan.fields.join(", ")}, updated_at = ? WHERE id = ?`,
+    [...plan.values, at, taskId]
   );
 
   return getTask(taskId, db);
@@ -288,34 +371,29 @@ export function completeTask(
   const current = getTask(taskId, db);
   if (!current) return null;
 
-  const completedAt = nowIso();
-
-  let cycleTimeSeconds: number | null = current.cycle_time_seconds;
-  if (current.started_at) {
-    cycleTimeSeconds = secondsBetween(current.started_at, completedAt);
+  // Completing an already completed task is a no-op: it must not recalculate
+  // the duration or append a second cycle for the same work.
+  if (current.status === "done") {
+    return current;
   }
 
+  const completedAt = nowIso();
+  const plan = planTransition(current, "done", completedAt);
   const updatedNotes = notes !== undefined ? notes : current.notes;
 
   db.transaction(() => {
     db.run(
-      `UPDATE tasks 
-       SET status = 'done', 
-           completed_at = ?,
-           cycle_time_seconds = ?,
-           notes = ?,
-           updated_at = ?
-       WHERE id = ?`,
-      [completedAt, cycleTimeSeconds, updatedNotes, completedAt, taskId]
+      `UPDATE tasks SET ${plan.fields.join(", ")}, notes = ?, updated_at = ? WHERE id = ?`,
+      [...plan.values, updatedNotes, completedAt, taskId]
     );
 
-    if (current.status !== "done") {
+    if (plan.cycle) {
       recordCycle(
         taskId,
         current.project_id,
-        current.started_at ?? completedAt,
-        completedAt,
-        cycleTimeSeconds ?? 0,
+        plan.cycle.startedAt,
+        plan.cycle.completedAt,
+        plan.cycle.cycleSeconds,
         db
       );
     }
@@ -379,26 +457,14 @@ export function updateTask(
   }
 
   if (updates.status !== undefined && updates.status !== current.status) {
-    fields.push("status = ?");
-    values.push(updates.status);
-
-    if (updates.status === "in_progress" && !current.started_at) {
-      fields.push("started_at = ?");
-      values.push(nowIso());
-    } else if (updates.status === "done" && !current.completed_at) {
-      const completedAt = nowIso();
-      fields.push("completed_at = ?");
-      values.push(completedAt);
-
-      const cycleSeconds = current.started_at
-        ? secondsBetween(current.started_at, completedAt)
-        : 0;
-      fields.push("cycle_time_seconds = ?");
-      values.push(cycleSeconds);
+    const plan = planTransition(current, updates.status, nowIso());
+    fields.push(...plan.fields);
+    values.push(...plan.values);
+    if (plan.cycle) {
       pendingCycle = {
-        startedAt: current.started_at ?? completedAt,
-        completedAt,
-        cycleSeconds,
+        startedAt: plan.cycle.startedAt,
+        completedAt: plan.cycle.completedAt,
+        cycleSeconds: plan.cycle.cycleSeconds,
         projectId: current.project_id,
       };
     }
