@@ -1,10 +1,19 @@
 import { Database } from "bun:sqlite";
 import crypto from "node:crypto";
 import { getDatabase } from "../db/connection.ts";
+import { getSection } from "./section.ts";
 
 export type TaskType = "feature" | "fix" | "bugfix" | "chore" | "refactor" | "debt";
 export type TaskPriority = "low" | "medium" | "high" | "blocker";
 export type TaskStatus = "backlog" | "todo" | "in_progress" | "done" | "archived";
+
+/** Raised when a task operation would break a domain invariant. */
+export class TaskValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TaskValidationError";
+  }
+}
 
 export interface Task {
   id: string;
@@ -51,10 +60,37 @@ export interface TaskFilterOptions {
   excludeArchived?: boolean;
 }
 
+/**
+ * A section may only be referenced by tasks of the same project. The database
+ * foreign key only proves the section exists, not which project owns it, so a
+ * task could be filed under another project's section (RF-06).
+ */
+export function assertSectionBelongsToProject(
+  sectionId: string,
+  projectId: string,
+  db: Database = getDatabase()
+): void {
+  const section = getSection(sectionId, db);
+  if (!section) {
+    throw new TaskValidationError(
+      `Section not found with ID: ${sectionId}. Use the project's own section ids from the sections endpoint.`
+    );
+  }
+  if (section.project_id !== projectId) {
+    throw new TaskValidationError(
+      `Section ${sectionId} does not belong to project ${projectId} (it belongs to ${section.project_id}).`
+    );
+  }
+}
+
 export function createTask(
   data: CreateTaskInput,
   db: Database = getDatabase()
 ): Task {
+  if (data.sectionId) {
+    assertSectionBelongsToProject(data.sectionId, data.projectId, db);
+  }
+
   const id = crypto.randomUUID();
   const type = data.type || "feature";
   const priority = data.priority || "medium";
@@ -281,6 +317,9 @@ export function updateTask(
     values.push(updates.type);
   }
   if (updates.section_id !== undefined) {
+    if (updates.section_id !== null) {
+      assertSectionBelongsToProject(updates.section_id, current.project_id, db);
+    }
     fields.push("section_id = ?");
     values.push(updates.section_id);
   }

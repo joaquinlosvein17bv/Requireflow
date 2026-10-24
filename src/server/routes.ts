@@ -23,6 +23,7 @@ import {
   startTask,
   completeTask,
   getKanbanBoard,
+  TaskValidationError,
   type TaskStatus,
   type TaskPriority,
   type TaskType,
@@ -347,6 +348,9 @@ export async function handleApiRoute(
     return errorResponse(`Endpoint not found: ${method} ${path}`, 404);
   } catch (err: any) {
     console.error("API error:", err);
+    if (err instanceof TaskValidationError) {
+      return errorResponse(err.message, 422);
+    }
     return errorResponse(err?.message || "Internal server error", 500);
   }
 }
