@@ -26,23 +26,25 @@ export function archiveDoneTasks(
     projectThreshold = 24;
   }
 
-  const conditions: string[] = ["status = 'done'"];
+  const conditions: string[] = ["t.status = 'done'"];
   const params: any[] = [];
 
   if (projectId) {
-    conditions.push("project_id = ?");
+    conditions.push("t.project_id = ?");
     params.push(projectId);
   }
 
   if (!forceManual) {
     const thresholdIso = new Date(Date.now() - projectThreshold * 3600 * 1000).toISOString();
-    conditions.push("completed_at <= ?");
+    conditions.push("t.completed_at <= ?");
     params.push(thresholdIso);
   }
 
   const candidateQuery = `
-    SELECT * FROM tasks 
-    WHERE ${conditions.join(" AND ")}
+    SELECT t.*, s.name as section_name, s.color as section_color
+      FROM tasks t
+      LEFT JOIN sections s ON t.section_id = s.id
+     WHERE ${conditions.join(" AND ")}
   `;
 
   const candidates = db.query(candidateQuery).all(...params) as Task[];
@@ -58,8 +60,9 @@ export function archiveDoneTasks(
     INSERT OR IGNORE INTO history (
       id, task_id, project_id, section_id, title, description,
       type, priority, notes, tags, started_at, completed_at,
-      archived_at, cycle_time_seconds, total_cycle_time_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      archived_at, cycle_time_seconds, total_cycle_time_ms,
+      section_name, section_color
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const updateTaskStmt = db.prepare(`
@@ -95,7 +98,9 @@ export function archiveDoneTasks(
         task.completed_at,
         now,
         cycleSecs,
-        totalMs
+        totalMs,
+        task.section_name ?? null,
+        task.section_color ?? null
       );
 
       updateTaskStmt.run(now, task.id);

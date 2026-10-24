@@ -175,6 +175,92 @@ function migrateHistoryUniqueness(db: Database): void {
   db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_history_task_unique ON history(task_id)");
 }
 
+/**
+ * Makes the permanent history genuinely permanent: `task_id` becomes nullable
+ * with `ON DELETE SET NULL`, and the section label/colour are snapshotted so
+ * deleting a section does not blank the record. History still belongs to its
+ * project, so deleting a project removes it (RF-05).
+ */
+function migrateHistoryPreservation(db: Database): void {
+  db.run(`
+    CREATE TABLE history_next (
+      id TEXT PRIMARY KEY,
+      task_id TEXT,
+      project_id TEXT NOT NULL,
+      section_id TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      type TEXT NOT NULL,
+      priority TEXT NOT NULL,
+      notes TEXT,
+      tags TEXT,
+      started_at DATETIME,
+      completed_at DATETIME,
+      archived_at DATETIME NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+      cycle_time_seconds INTEGER,
+      total_cycle_time_ms INTEGER,
+      section_name TEXT,
+      section_color TEXT,
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+    );
+  `);
+
+  db.run(`
+    INSERT INTO history_next (
+      id, task_id, project_id, section_id, title, description, type, priority,
+      notes, tags, started_at, completed_at, archived_at, cycle_time_seconds,
+      total_cycle_time_ms, section_name, section_color
+    )
+    SELECT h.id, h.task_id, h.project_id, h.section_id, h.title, h.description,
+           h.type, h.priority, h.notes, h.tags, h.started_at, h.completed_at,
+           h.archived_at, h.cycle_time_seconds, h.total_cycle_time_ms,
+           s.name, s.color
+      FROM history h
+      LEFT JOIN sections s ON s.id = h.section_id;
+  `);
+
+  db.run("DROP TABLE history");
+  db.run("ALTER TABLE history_next RENAME TO history");
+
+  db.run("CREATE INDEX IF NOT EXISTS idx_history_project_archived ON history(project_id, archived_at)");
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_history_task_unique ON history(task_id)");
+
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_history_ai AFTER INSERT ON history BEGIN
+      INSERT INTO history_fts(id, task_id, project_id, title, description, notes)
+      VALUES (
+        new.id, new.task_id, new.project_id, new.title,
+        coalesce(new.description, ''), coalesce(new.notes, '')
+      );
+    END;
+  `);
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_history_ad AFTER DELETE ON history BEGIN
+      DELETE FROM history_fts WHERE id = old.id;
+    END;
+  `);
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_history_au AFTER UPDATE ON history BEGIN
+      DELETE FROM history_fts WHERE id = old.id;
+      INSERT INTO history_fts(id, task_id, project_id, title, description, notes)
+      VALUES (
+        new.id, new.task_id, new.project_id, new.title,
+        coalesce(new.description, ''), coalesce(new.notes, '')
+      );
+    END;
+  `);
+
+  // The copy above ran before the triggers existed, so rebuild the index.
+  db.run("DELETE FROM history_fts");
+  db.run(`
+    INSERT INTO history_fts(id, task_id, project_id, title, description, notes)
+    SELECT id, coalesce(task_id, ''), project_id, title,
+           coalesce(description, ''), coalesce(notes, '')
+      FROM history;
+  `);
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -195,6 +281,11 @@ export const MIGRATIONS: Migration[] = [
     version: 4,
     name: "history_one_row_per_task",
     run: migrateHistoryUniqueness,
+  },
+  {
+    version: 5,
+    name: "history_preserved_after_task_delete",
+    run: migrateHistoryPreservation,
   },
 ];
 

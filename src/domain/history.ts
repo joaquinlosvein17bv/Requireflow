@@ -3,7 +3,8 @@ import { getDatabase } from "../db/connection.ts";
 
 export interface HistoryItem {
   id: string;
-  task_id: string;
+  /** Null once the task row is deleted; the snapshot below keeps the record. */
+  task_id: string | null;
   project_id: string;
   section_id: string | null;
   title: string;
@@ -66,11 +67,10 @@ export function searchHistory(
       conditions.length > 0 ? ` AND ${conditions.join(" AND ")}` : "";
 
     const sql = `
-      SELECT h.*, p.name as project_name, s.name as section_name, s.color as section_color
+      SELECT h.*, p.name as project_name
       FROM history h
       JOIN history_fts fts ON fts.id = h.id
       JOIN projects p ON h.project_id = p.id
-      LEFT JOIN sections s ON h.section_id = s.id
       WHERE history_fts MATCH ?${extraConditions}
       ORDER BY bm25(history_fts), h.archived_at DESC
       LIMIT ?
@@ -90,10 +90,9 @@ export function searchHistory(
       likeParams.push(limit);
 
       return db.query(`
-        SELECT h.*, p.name as project_name, s.name as section_name, s.color as section_color
+        SELECT h.*, p.name as project_name
         FROM history h
         JOIN projects p ON h.project_id = p.id
-        LEFT JOIN sections s ON h.section_id = s.id
         WHERE ${likeConditions.join(" AND ")}
         ORDER BY h.archived_at DESC
         LIMIT ?
@@ -131,10 +130,9 @@ export function listHistory(
   const queryParams = [...params, limit, offset];
   const items = db
     .query(`
-      SELECT h.*, p.name as project_name, s.name as section_name, s.color as section_color
+      SELECT h.*, p.name as project_name
       FROM history h
       JOIN projects p ON h.project_id = p.id
-      LEFT JOIN sections s ON h.section_id = s.id
       ${whereClause}
       ORDER BY h.archived_at DESC
       LIMIT ? OFFSET ?
@@ -156,10 +154,9 @@ export function getHistoryItem(
 ): HistoryItem | null {
   return db
     .query(`
-      SELECT h.*, p.name as project_name, s.name as section_name, s.color as section_color
+      SELECT h.*, p.name as project_name
       FROM history h
       JOIN projects p ON h.project_id = p.id
-      LEFT JOIN sections s ON h.section_id = s.id
       WHERE h.id = ?
     `)
     .get(id) as HistoryItem | null;
