@@ -82,25 +82,25 @@ Acceptance: documentation matches implementation; CI runs tests, typecheck and b
 
 | ID | Specs | Route | Status | Commit |
 |---|---|---|---|---|
-| T1 | S18 | inline | pending | — |
-| T2 | S21 | inline | pending | — |
-| T3 | S3 | inline | pending | — |
-| T4 | S17 | inline | pending | — |
-| T5 | S1, S15 | inline | pending | — |
-| T6 | S2 | inline | pending | — |
-| T7 | S6 | inline | pending | — |
-| T8 | S11, S22, S9 | inline | pending | — |
-| T9 | S9, S10 | inline | pending | — |
-| T10 | S5 | inline | pending | — |
-| T11 | S7, S8 | inline | pending | — |
-| T12 | S13, S16 | inline | pending | — |
-| T13 | S14 | inline | pending | — |
-| T14 | S4 | inline | pending | — |
-| T15 | S19 | inline | pending | — |
-| T16 | S20 | inline | pending | — |
-| T17 | S23 | inline | pending | — |
-| T18 | S24 | inline | pending | — |
-| T19 | all | inline | pending | — final report |
+| T1 | S18 | inline | done | `1a86026` |
+| T2 | S21 | inline | done | `d2b5a6d` |
+| T3 | S3 | inline | done | `a0cd96a` |
+| T4 | S17 | inline | done | `d3abe2e` |
+| T5 | S1, S15 | inline | done | `bde90b9` |
+| T6 | S2 | inline | done | `b229c38` |
+| T7 | S6 | inline | done | `0a6d480` |
+| T8 | S11, S22, S9 | inline | done | `0293ce2` |
+| T9 | S9, S10 | inline | done | `fb5d4e5` |
+| T10 | S5 | inline | done | `d774703` |
+| T11 | S7, S8 | inline | done | `a77ba0e` |
+| T12 | S13, S16 | inline | done | `5836501` |
+| T13 | S14 | inline | done | `dfd981f` |
+| T14 | S4 | inline | done | `3079fbd` |
+| T15 | S19 | inline | done | `532f9c3` |
+| T16 | S20 | inline | done | `153ae74` |
+| T17 | S23 | inline | done | `8484892` |
+| T18 | S24 | inline | done | `167f181` |
+| T19 | all | inline | done | final report |
 
 ## Log
 
@@ -118,3 +118,5 @@ L4 Architectural decisions (conservative, documented):
 5. UI files are embedded at build time via text imports; `uiDir` remains an explicit override for tests/dev. `public/` is removed.
 6. Auto-archive runs opportunistically (CLI startup + HTTP server interval) because a local-first tool has no daemon; documented in README.
 7. Pre-existing identity collisions cannot be split without evidence: the migration records them as warnings (project whose `root_path` no longer exists on disk) and never reassigns tasks.
+
+L5 Final verification (Phase 5): 125 tests pass / 0 fail, typecheck exit 0, build produces dist/requireflow + dist/ui. Compiled binary run from a foreign cwd with a decoy src/ui serves the correct dashboard, 403 without token, 403 with spoofed Host. Real database copy migrated through v5 with all rows and ids preserved, FTS working. Browser pass on the demo dataset: Kanban 4/2/2, 30 trend rows, 5 history rows, zero console errors, stored XSS payloads inert. Report: AUDITORIA_CORRECCIONES_REQUIREFLOW.md.
