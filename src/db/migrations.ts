@@ -298,15 +298,19 @@ export function runMigrations(db: Database): void {
     );
   `);
 
-  const appliedRows = db.query("SELECT version FROM _schema_migrations").all() as { version: number }[];
-  const appliedVersions = new Set(appliedRows.map((r) => r.version));
-
   for (const migration of MIGRATIONS) {
-    if (appliedVersions.has(migration.version)) {
-      continue;
-    }
-
+    // The check must happen under the write lock: two processes opening the same
+    // database for the first time would otherwise both decide the migration is
+    // pending and one would fail with a primary key violation.
     db.transaction(() => {
+      const applied = db
+        .query("SELECT 1 as applied FROM _schema_migrations WHERE version = ?")
+        .get(migration.version) as { applied: number } | null;
+
+      if (applied) {
+        return;
+      }
+
       if (migration.sql) {
         db.run(migration.sql);
       }
@@ -315,6 +319,6 @@ export function runMigrations(db: Database): void {
         "INSERT INTO _schema_migrations (version, name) VALUES (?, ?)",
         [migration.version, migration.name]
       );
-    })();
+    }).immediate();
   }
 }

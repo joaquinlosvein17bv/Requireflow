@@ -32,11 +32,15 @@ export function createDatabase(customPath?: string): Database {
 
   const db = new Database(dbPath, { create: true });
 
+  // Timeouts come first: switching to WAL and running migrations both need a
+  // write lock, and a second process opening the database at the same moment
+  // must wait instead of failing with SQLITE_BUSY.
+  db.run("PRAGMA busy_timeout = 5000;");
+  db.run("PRAGMA foreign_keys = ON;");
+
   if (dbPath !== ":memory:") {
     db.run("PRAGMA journal_mode = WAL;");
   }
-  db.run("PRAGMA foreign_keys = ON;");
-  db.run("PRAGMA busy_timeout = 5000;");
 
   runMigrations(db);
   return db;

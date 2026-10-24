@@ -61,6 +61,26 @@ export interface TaskFilterOptions {
   excludeArchived?: boolean;
 }
 
+export const ELIGIBLE_STATUSES: TaskStatus[] = ["todo", "backlog"];
+
+/**
+ * Single ordering for the board and for "what is next": priority first, then the
+ * position the user dragged the card to, then creation order and finally the id
+ * so the result is stable when everything else ties.
+ */
+const TASK_ORDER_BY = `
+  CASE t.priority 
+    WHEN 'blocker' THEN 4 
+    WHEN 'high' THEN 3 
+    WHEN 'medium' THEN 2 
+    WHEN 'low' THEN 1 
+    ELSE 0 
+  END DESC,
+  t.position ASC,
+  t.created_at ASC,
+  t.id ASC
+`;
+
 /**
  * A section may only be referenced by tasks of the same project. The database
  * foreign key only proves the section exists, not which project owns it, so a
@@ -100,37 +120,43 @@ export function createTask(
   const timestamp = nowIso();
 
   let pos = data.position;
-  if (pos === undefined) {
-    const maxPosRow = db
-      .query(
-        "SELECT MAX(position) as max_pos FROM tasks WHERE project_id = ? AND status = ?"
-      )
-      .get(data.projectId, status) as { max_pos: number | null };
-    pos = (maxPosRow?.max_pos ?? -1) + 1;
-  }
+  const insert = (): void => {
+    if (pos === undefined) {
+      const maxPosRow = db
+        .query(
+          "SELECT MAX(position) as max_pos FROM tasks WHERE project_id = ? AND status = ?"
+        )
+        .get(data.projectId, status) as { max_pos: number | null };
+      pos = (maxPosRow?.max_pos ?? -1) + 1;
+    }
 
-  db.run(
-    `INSERT INTO tasks (
-      id, project_id, section_id, title, description, type, priority,
-      status, position, story_points, tags, notes, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      data.projectId,
-      data.sectionId || null,
-      data.title,
-      data.description || null,
-      type,
-      priority,
-      status,
-      pos,
-      data.storyPoints ?? null,
-      tagsStr,
-      data.notes || null,
-      timestamp,
-      timestamp,
-    ]
-  );
+    db.run(
+      `INSERT INTO tasks (
+        id, project_id, section_id, title, description, type, priority,
+        status, position, story_points, tags, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        data.projectId,
+        data.sectionId || null,
+        data.title,
+        data.description || null,
+        type,
+        priority,
+        status,
+        pos,
+        data.storyPoints ?? null,
+        tagsStr,
+        data.notes || null,
+        timestamp,
+        timestamp,
+      ]
+    );
+  };
+
+  // `MAX(position)+1` must be evaluated under a write lock, otherwise two
+  // concurrent agent inserts read the same maximum and share a position.
+  db.transaction(insert).immediate();
 
   return getTask(id, db)!;
 }
@@ -190,16 +216,7 @@ export function listTasks(
     FROM tasks t
     LEFT JOIN sections s ON t.section_id = s.id
     WHERE ${conditions.join(" AND ")}
-    ORDER BY 
-      CASE t.priority 
-        WHEN 'blocker' THEN 4 
-        WHEN 'high' THEN 3 
-        WHEN 'medium' THEN 2 
-        WHEN 'low' THEN 1 
-        ELSE 0 
-      END DESC,
-      t.position ASC,
-      t.created_at ASC
+    ORDER BY ${TASK_ORDER_BY}
   `;
 
   return db.query(query).all(...params) as Task[];
@@ -210,8 +227,12 @@ export function getNextTask(
   sectionId?: string,
   db: Database = getDatabase()
 ): Task | null {
-  const conditions: string[] = ["t.project_id = ?", "t.status = 'todo'"];
-  const params: any[] = [projectId];
+  const statusPlaceholders = ELIGIBLE_STATUSES.map(() => "?").join(", ");
+  const conditions: string[] = [
+    "t.project_id = ?",
+    `t.status IN (${statusPlaceholders})`,
+  ];
+  const params: any[] = [projectId, ...ELIGIBLE_STATUSES];
 
   if (sectionId) {
     conditions.push("t.section_id = ?");
@@ -223,15 +244,7 @@ export function getNextTask(
     FROM tasks t
     LEFT JOIN sections s ON t.section_id = s.id
     WHERE ${conditions.join(" AND ")}
-    ORDER BY 
-      CASE t.priority 
-        WHEN 'blocker' THEN 4 
-        WHEN 'high' THEN 3 
-        WHEN 'medium' THEN 2 
-        WHEN 'low' THEN 1 
-        ELSE 0 
-      END DESC,
-      t.created_at ASC
+    ORDER BY ${TASK_ORDER_BY}
     LIMIT 1
   `;
 
