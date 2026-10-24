@@ -1,19 +1,18 @@
 // RequireFlow Vanilla Client Application
-(function () {
-  "use strict";
+import { createEl, safeColor } from "./safe-dom.js";
 
-  const state = {
-    projects: [],
-    currentProject: null,
-    sections: [],
-    activeTab: "kanban",
-    activeSectionFilter: null,
-    kanbanData: { todo: [], in_progress: [], done: [] },
-    backlogTasks: [],
-    historyData: { items: [], total: 0, page: 1, limit: 20 },
-    metrics: null,
-    searchDebounceTimer: null,
-  };
+const state = {
+  projects: [],
+  currentProject: null,
+  sections: [],
+  activeTab: "kanban",
+  activeSectionFilter: null,
+  kanbanData: { todo: [], in_progress: [], done: [] },
+  backlogTasks: [],
+  historyData: { items: [], total: 0, page: 1, limit: 20 },
+  metrics: null,
+  searchDebounceTimer: null,
+};
 
   // --- API Client ---
   async function fetchAPI(endpoint, options = {}) {
@@ -45,7 +44,10 @@
 
     const toast = document.createElement("div");
     toast.className = `toast toast-${type}`;
-    toast.innerHTML = `<span>${type === "success" ? "✓" : "⚠️"}</span> <span>${message}</span>`;
+    toast.append(
+      createEl("span", { text: type === "success" ? "✓" : "⚠️" }),
+      createEl("span", { text: message })
+    );
     container.appendChild(toast);
 
     setTimeout(() => {
@@ -175,7 +177,13 @@
     for (const sec of state.sections) {
       const chip = document.createElement("button");
       chip.className = `section-chip ${state.activeSectionFilter === sec.id ? "active" : ""}`;
-      chip.innerHTML = `<span class="section-dot" style="background-color: ${sec.color}"></span> ${sec.name}`;
+      chip.append(
+        createEl("span", {
+          class: "section-dot",
+          style: { "background-color": safeColor(sec.color) },
+        }),
+        document.createTextNode(` ${sec.name}`)
+      );
       chip.addEventListener("click", () => {
         state.activeSectionFilter = state.activeSectionFilter === sec.id ? null : sec.id;
         renderSectionFilterBar();
@@ -299,82 +307,106 @@
   }
 
   function createTaskCard(task, columnStatus) {
-    const card = document.createElement("div");
-    card.className = "task-card";
-    card.setAttribute("data-id", task.id);
+    const card = createEl("div", { class: "task-card", dataset: { id: task.id } });
+    const sectionColor = safeColor(task.section_color);
 
-    const sectionColor = task.section_color || "#6366f1";
-    const sectionBadge = task.section_name
-      ? `<span class="section-chip" style="font-size: 0.68rem; padding: 1px 6px; border-color: ${sectionColor}44">
-           <span class="section-dot" style="background-color: ${sectionColor}"></span> ${task.section_name}
-         </span>`
-      : "";
+    const badges = createEl("div", { class: "card-badges" }, [
+      createEl("span", { class: `badge badge-type-${task.type}`, text: task.type }),
+      createEl("span", { class: `badge badge-priority-${task.priority}`, text: task.priority }),
+      task.section_name
+        ? createEl(
+            "span",
+            {
+              class: "section-chip",
+              style: {
+                "font-size": "0.68rem",
+                padding: "1px 6px",
+                "border-color": `${sectionColor}44`,
+              },
+            },
+            [
+              createEl("span", {
+                class: "section-dot",
+                style: { "background-color": sectionColor },
+              }),
+              document.createTextNode(` ${task.section_name}`),
+            ]
+          )
+        : null,
+    ]);
 
-    let actionButton = "";
-    let timeDisplay = "";
+    const timeBox = createEl("div");
+    const actions = createEl("div", { class: "card-actions" });
 
     if (columnStatus === "todo") {
-      actionButton = `<button class="btn-primary btn-sm btn-start-task" data-id="${task.id}">▶ Iniciar</button>`;
+      const startButton = createEl("button", {
+        class: "btn-primary btn-sm btn-start-task",
+        dataset: { id: task.id },
+        text: "▶ Iniciar",
+      });
+      startButton.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await fetchAPI(`/api/tasks/${task.id}/start`, { method: "POST" });
+        showToast(`Tarea "${task.title}" iniciada`);
+        loadKanban();
+      });
+      actions.append(startButton);
     } else if (columnStatus === "in_progress") {
-      actionButton = `<button class="btn-primary btn-sm btn-complete-task" data-id="${task.id}">✓ Completar</button>`;
+      const completeButton = createEl("button", {
+        class: "btn-primary btn-sm btn-complete-task",
+        dataset: { id: task.id },
+        text: "✓ Completar",
+      });
+      completeButton.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openCompleteModal(task);
+      });
+      actions.append(completeButton);
+
       if (task.started_at) {
-        const elapsedSecs = Math.max(0, Math.round((Date.now() - new Date(task.started_at).getTime()) / 1000));
-        timeDisplay = `<span class="live-timer" data-started="${task.started_at}">⏱️ ${formatDuration(elapsedSecs)}</span>`;
+        const elapsedSecs = Math.max(
+          0,
+          Math.round((Date.now() - new Date(task.started_at).getTime()) / 1000)
+        );
+        timeBox.append(
+          createEl("span", {
+            class: "live-timer",
+            dataset: { started: task.started_at },
+            text: `⏱️ ${formatDuration(elapsedSecs)}`,
+          })
+        );
       }
     } else if (columnStatus === "done") {
       if (task.cycle_time_seconds) {
-        timeDisplay = `<span style="color: var(--success); font-weight: 600;">⚡ ${formatDuration(task.cycle_time_seconds)}</span>`;
+        timeBox.append(
+          createEl("span", {
+            style: { color: "var(--success)", "font-weight": "600" },
+            text: `⚡ ${formatDuration(task.cycle_time_seconds)}`,
+          })
+        );
       }
     }
 
-    card.innerHTML = `
-      <div class="card-top">
-        <div class="card-badges">
-          <span class="badge badge-type-${task.type}">${task.type}</span>
-          <span class="badge badge-priority-${task.priority}">${task.priority}</span>
-          ${sectionBadge}
-        </div>
-      </div>
-      <div class="card-title">${escapeHtml(task.title)}</div>
-      ${task.description ? `<div class="card-desc">${escapeHtml(task.description)}</div>` : ""}
-      <div class="card-footer">
-        <div>${timeDisplay}</div>
-        <div class="card-actions">
-          ${actionButton}
-          <button class="btn-secondary btn-sm btn-edit-task" data-id="${task.id}" title="Editar">✏️</button>
-        </div>
-      </div>
-    `;
-
-    // Card events
-    card.querySelector(".btn-start-task")?.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      await fetchAPI(`/api/tasks/${task.id}/start`, { method: "POST" });
-      showToast(`Tarea "${task.title}" iniciada`);
-      loadKanban();
+    const editButton = createEl("button", {
+      class: "btn-secondary btn-sm btn-edit-task",
+      dataset: { id: task.id },
+      attrs: { title: "Editar" },
+      text: "✏️",
     });
-
-    card.querySelector(".btn-complete-task")?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openCompleteModal(task);
-    });
-
-    card.querySelector(".btn-edit-task")?.addEventListener("click", (e) => {
+    editButton.addEventListener("click", (e) => {
       e.stopPropagation();
       openEditTaskModal(task);
     });
+    actions.append(editButton);
+
+    card.append(
+      createEl("div", { class: "card-top" }, [badges]),
+      createEl("div", { class: "card-title", text: task.title }),
+      task.description ? createEl("div", { class: "card-desc", text: task.description }) : null,
+      createEl("div", { class: "card-footer" }, [timeBox, actions])
+    );
 
     return card;
-  }
-
-  function escapeHtml(str) {
-    if (!str) return "";
-    return str
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
   }
 
   // --- Archival Flush ---
@@ -439,42 +471,61 @@
       const groupEl = document.createElement("div");
       groupEl.className = "backlog-section-group";
 
-      groupEl.innerHTML = `
-        <div class="section-group-header">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span class="section-dot" style="background-color: ${group.section.color}"></span>
-            <span>${group.section.name}</span>
-          </div>
-          <span class="col-count">${group.tasks.length}</span>
-        </div>
-        <div class="backlog-rows-container"></div>
-      `;
+      groupEl.append(
+        createEl("div", { class: "section-group-header" }, [
+          createEl("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, [
+            createEl("span", {
+              class: "section-dot",
+              style: { "background-color": safeColor(group.section.color) },
+            }),
+            createEl("span", { text: group.section.name }),
+          ]),
+          createEl("span", { class: "col-count", text: group.tasks.length }),
+        ])
+      );
 
-      const rowsContainer = groupEl.querySelector(".backlog-rows-container");
+      const rowsContainer = document.createElement("div");
+      rowsContainer.className = "backlog-rows-container";
+      groupEl.append(rowsContainer);
+
       for (const task of group.tasks) {
         const row = document.createElement("div");
         row.className = "backlog-row";
-        row.innerHTML = `
-          <div class="backlog-row-left">
-            <span class="badge badge-priority-${task.priority}">${task.priority}</span>
-            <span class="badge badge-type-${task.type}">${task.type}</span>
-            <span style="font-weight: 500;">${escapeHtml(task.title)}</span>
-          </div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <button class="btn-primary btn-sm btn-start-row" data-id="${task.id}">▶ Iniciar</button>
-            <button class="btn-secondary btn-sm btn-edit-row" data-id="${task.id}">✏️</button>
-          </div>
-        `;
 
-        row.querySelector(".btn-start-row")?.addEventListener("click", async () => {
+        const startButton = createEl("button", {
+          class: "btn-primary btn-sm btn-start-row",
+          dataset: { id: task.id },
+          text: "▶ Iniciar",
+        });
+        startButton.addEventListener("click", async () => {
           await fetchAPI(`/api/tasks/${task.id}/start`, { method: "POST" });
           showToast(`Tarea iniciada: ${task.title}`);
           loadBacklog();
         });
 
-        row.querySelector(".btn-edit-row")?.addEventListener("click", () => {
+        const editButton = createEl("button", {
+          class: "btn-secondary btn-sm btn-edit-row",
+          dataset: { id: task.id },
+          text: "✏️",
+        });
+        editButton.addEventListener("click", () => {
           openEditTaskModal(task);
         });
+
+        row.append(
+          createEl("div", { class: "backlog-row-left" }, [
+            createEl("span", {
+              class: `badge badge-priority-${task.priority}`,
+              text: task.priority,
+            }),
+            createEl("span", { class: `badge badge-type-${task.type}`, text: task.type }),
+            createEl("span", { style: { "font-weight": "500" }, text: task.title }),
+          ]),
+          createEl("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, [
+            startButton,
+            editButton,
+          ])
+        );
 
         rowsContainer.appendChild(row);
       }
@@ -507,21 +558,51 @@
     for (const item of state.historyData.items) {
       const tr = document.createElement("tr");
       const cycleText = item.cycle_time_seconds ? formatDuration(item.cycle_time_seconds) : "-";
-      const sectionColor = item.section_color || "#6366f1";
+      const sectionColor = safeColor(item.section_color);
 
-      tr.innerHTML = `
-        <td><span class="badge badge-type-${item.type}">${item.type}</span></td>
-        <td><span class="badge badge-priority-${item.priority}">${item.priority}</span></td>
-        <td style="font-weight: 600;">${escapeHtml(item.title)}</td>
-        <td>
-          ${item.section_name ? `<span class="section-chip" style="font-size: 0.7rem; padding: 1px 6px;">
-              <span class="section-dot" style="background-color: ${sectionColor}"></span> ${item.section_name}
-            </span>` : "-"}
-        </td>
-        <td style="font-family: var(--font-mono); color: var(--primary-hover);">${cycleText}</td>
-        <td style="max-width: 250px; font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(item.notes || "-")}</td>
-        <td style="font-size: 0.75rem; color: var(--text-dim);">${formatDate(item.archived_at)}</td>
-      `;
+      tr.append(
+        createEl("td", {}, [
+          createEl("span", { class: `badge badge-type-${item.type}`, text: item.type }),
+        ]),
+        createEl("td", {}, [
+          createEl("span", { class: `badge badge-priority-${item.priority}`, text: item.priority }),
+        ]),
+        createEl("td", { style: { "font-weight": "600" }, text: item.title }),
+        createEl("td", {}, [
+          item.section_name
+            ? createEl(
+                "span",
+                {
+                  class: "section-chip",
+                  style: { "font-size": "0.7rem", padding: "1px 6px" },
+                },
+                [
+                  createEl("span", {
+                    class: "section-dot",
+                    style: { "background-color": sectionColor },
+                  }),
+                  document.createTextNode(` ${item.section_name}`),
+                ]
+              )
+            : document.createTextNode("-"),
+        ]),
+        createEl("td", {
+          style: { "font-family": "var(--font-mono)", color: "var(--primary-hover)" },
+          text: cycleText,
+        }),
+        createEl("td", {
+          style: {
+            "max-width": "250px",
+            "font-size": "0.8rem",
+            color: "var(--text-muted)",
+          },
+          text: item.notes || "-",
+        }),
+        createEl("td", {
+          style: { "font-size": "0.75rem", color: "var(--text-dim)" },
+          text: formatDate(item.archived_at),
+        })
+      );
       tbody.appendChild(tr);
     }
   }
@@ -561,15 +642,16 @@
       for (const t of types) {
         const count = dist[t.key] || 0;
         const pct = Math.round((count / total) * 100);
-        const row = document.createElement("div");
-        row.className = "dist-bar-row";
-        row.innerHTML = `
-          <div class="dist-bar-label">${t.label}</div>
-          <div class="dist-bar-track">
-            <div class="dist-bar-fill" style="width: ${pct}%; background-color: ${t.color}"></div>
-          </div>
-          <div class="dist-bar-count">${count}</div>
-        `;
+        const row = createEl("div", { class: "dist-bar-row" }, [
+          createEl("div", { class: "dist-bar-label", text: t.label }),
+          createEl("div", { class: "dist-bar-track" }, [
+            createEl("div", {
+              class: "dist-bar-fill",
+              style: { width: `${pct}%`, "background-color": safeColor(t.color) },
+            }),
+          ]),
+          createEl("div", { class: "dist-bar-count", text: count }),
+        ]);
         distContainer.appendChild(row);
       }
     }
@@ -582,12 +664,13 @@
         timelineContainer.innerHTML = '<div class="empty-state" style="padding: 10px;">Sin entregas en los últimos 7 días.</div>';
       } else {
         for (const item of state.metrics.dailyTrends) {
-          const row = document.createElement("div");
-          row.className = "trend-day-row";
-          row.innerHTML = `
-            <span>${item.date}</span>
-            <strong style="color: var(--success); font-family: var(--font-mono);">+${item.completedCount} completadas</strong>
-          `;
+          const row = createEl("div", { class: "trend-day-row" }, [
+            createEl("span", { text: item.date }),
+            createEl("strong", {
+              style: { color: "var(--success)", "font-family": "var(--font-mono)" },
+              text: `+${item.completedCount} completadas`,
+            }),
+          ]);
           timelineContainer.appendChild(row);
         }
       }
@@ -601,17 +684,21 @@
 
     grid.innerHTML = "";
     for (const p of state.projects) {
-      const card = document.createElement("div");
-      card.className = `project-card ${state.currentProject?.id === p.id ? "active" : ""}`;
-      card.innerHTML = `
-        <div class="project-card-title">${escapeHtml(p.name)}</div>
-        <div class="project-card-desc">${escapeHtml(p.description || "Sin descripción")}</div>
-        <div class="project-card-stats">
-          <span>Activas: <strong>${p.active_tasks_count || 0}</strong></span>
-          <span>Por Hacer: <strong>${p.todo_count || 0}</strong></span>
-          <span>Completadas: <strong>${p.done_count || 0}</strong></span>
-        </div>
-      `;
+      const card = createEl("div", {
+        class: `project-card ${state.currentProject?.id === p.id ? "active" : ""}`,
+      });
+      card.append(
+        createEl("div", { class: "project-card-title", text: p.name }),
+        createEl("div", {
+          class: "project-card-desc",
+          text: p.description || "Sin descripción",
+        }),
+        createEl("div", { class: "project-card-stats" }, [
+          createEl("span", {}, ["Activas: ", createEl("strong", { text: p.active_tasks_count || 0 })]),
+          createEl("span", {}, ["Por Hacer: ", createEl("strong", { text: p.todo_count || 0 })]),
+          createEl("span", {}, ["Completadas: ", createEl("strong", { text: p.done_count || 0 })]),
+        ])
+      );
 
       card.addEventListener("click", () => {
         state.currentProject = p;
@@ -821,4 +908,3 @@
     initLiveTimers();
     await loadProjects();
   });
-})();
