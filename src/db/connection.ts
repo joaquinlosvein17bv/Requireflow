@@ -4,8 +4,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { runMigrations } from "./migrations.ts";
 
-let activeDb: Database | null = null;
-let activeDbPath: string | null = null;
+const databases = new Map<string, Database>();
 
 export function resolveDbPath(customPath?: string): string {
   if (customPath) {
@@ -43,26 +42,52 @@ export function createDatabase(customPath?: string): Database {
   return db;
 }
 
+/**
+ * Returns the connection for a path, creating it on first use.
+ *
+ * Connections are cached per resolved path. The previous implementation kept a
+ * single active connection and closed it whenever another path was requested,
+ * so one consumer silently invalidated another consumer's handle (RF-17).
+ */
 export function getDatabase(customPath?: string): Database {
   const targetPath = resolveDbPath(customPath);
-  if (!activeDb || activeDbPath !== targetPath) {
-    if (activeDb) {
-      activeDb.close();
-    }
-    activeDb = createDatabase(targetPath);
-    activeDbPath = targetPath;
+  const existing = databases.get(targetPath);
+  if (existing) {
+    return existing;
   }
-  return activeDb;
+
+  const created = createDatabase(targetPath);
+  databases.set(targetPath, created);
+  return created;
 }
 
-export function closeDatabase(): void {
-  if (activeDb) {
-    try {
-      activeDb.close();
-    } catch {
-      // already closed
+/**
+ * Closes one cached connection, or every cached connection when no path is
+ * given. Never closes a connection the caller did not ask to close.
+ */
+export function closeDatabase(customPath?: string): void {
+  if (customPath === undefined) {
+    for (const db of databases.values()) {
+      try {
+        db.close();
+      } catch {
+        // already closed
+      }
     }
-    activeDb = null;
-    activeDbPath = null;
+    databases.clear();
+    return;
   }
+
+  const targetPath = resolveDbPath(customPath);
+  const db = databases.get(targetPath);
+  if (!db) {
+    return;
+  }
+
+  try {
+    db.close();
+  } catch {
+    // already closed
+  }
+  databases.delete(targetPath);
 }
