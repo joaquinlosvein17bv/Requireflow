@@ -20,6 +20,12 @@ interface Board {
 }
 
 describe("HTTP Server & REST API Layer", () => {
+  const TOKEN = "test-token";
+  const authHeaders = (): Record<string, string> => ({
+    "Content-Type": "application/json",
+    "X-RequireFlow-Token": TOKEN,
+  });
+
   let db: Database;
   let server: ReturnType<typeof createHttpServer>;
   let baseUrl: string;
@@ -36,6 +42,7 @@ describe("HTTP Server & REST API Layer", () => {
       host: "127.0.0.1",
       db,
       uiDir: tempUiDir,
+      token: "test-token",
     });
     baseUrl = `http://127.0.0.1:${server.port}`;
   });
@@ -65,7 +72,7 @@ describe("HTTP Server & REST API Layer", () => {
     // 1. Create project
     const postRes = await fetch(`${baseUrl}/api/projects`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({ name: "Web App API Test", description: "REST Testing" }),
     });
     expect(postRes.status).toBe(201);
@@ -90,7 +97,7 @@ describe("HTTP Server & REST API Layer", () => {
     // Create a project
     const projRes = await fetch(`${baseUrl}/api/projects`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({ name: "Lifecycle Project" }),
     });
     const proj = await readJson<Project>(projRes);
@@ -103,7 +110,7 @@ describe("HTTP Server & REST API Layer", () => {
     // Create a task
     const taskRes = await fetch(`${baseUrl}/api/projects/${proj.id}/tasks`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({
         title: "Test Task via API",
         type: "bugfix",
@@ -122,7 +129,7 @@ describe("HTTP Server & REST API Layer", () => {
     expect(board.in_progress.length).toBe(0);
 
     // Start task
-    const startRes = await fetch(`${baseUrl}/api/tasks/${task.id}/start`, { method: "POST" });
+    const startRes = await fetch(`${baseUrl}/api/tasks/${task.id}/start`, { method: "POST", headers: authHeaders() });
     expect(startRes.status).toBe(200);
     const started = await readJson<Task>(startRes);
     expect(started.status).toBe("in_progress");
@@ -130,7 +137,7 @@ describe("HTTP Server & REST API Layer", () => {
     // Complete task
     const completeRes = await fetch(`${baseUrl}/api/tasks/${task.id}/complete`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({ notes: "Fixed and tested in dev" }),
     });
     expect(completeRes.status).toBe(200);
@@ -140,7 +147,7 @@ describe("HTTP Server & REST API Layer", () => {
     // Archive done tasks
     const archiveRes = await fetch(`${baseUrl}/api/projects/${proj.id}/archive-done`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({ forceManual: true }),
     });
     expect(archiveRes.status).toBe(200);

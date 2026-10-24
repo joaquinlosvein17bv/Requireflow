@@ -35,9 +35,8 @@ import { listHistory, searchHistory } from "../domain/history.ts";
 import { calculateProjectMetrics } from "../domain/efficiency.ts";
 
 export const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, X-RequireFlow-Token",
 };
 
 export function jsonResponse(data: any, status: number = 200): Response {
@@ -45,7 +44,6 @@ export function jsonResponse(data: any, status: number = 200): Response {
     status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      ...CORS_HEADERS,
     },
   });
 }
@@ -106,16 +104,17 @@ function validateDirectory(input: string): DirectoryValidation {
 export async function handleApiRoute(
   req: Request,
   url: URL,
-  db: Database = getDatabase()
+  db: Database = getDatabase(),
+  token: string = ""
 ): Promise<Response | null> {
   const method = req.method.toUpperCase();
   const path = url.pathname;
 
-  if (method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: CORS_HEADERS,
-    });
+  if (path === "/api/health") {
+    if (method === "GET") {
+      return jsonResponse({ ok: true, version: "0.1.0", token });
+    }
+    return errorResponse("Method not allowed", 405);
   }
 
   if (!path.startsWith("/api/")) {

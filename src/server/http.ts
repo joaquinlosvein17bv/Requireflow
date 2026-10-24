@@ -4,13 +4,21 @@ import fs from "node:fs";
 import { Database } from "bun:sqlite";
 import { getDatabase } from "../db/connection.ts";
 import { startAutoArchive } from "../domain/archive.ts";
-import { handleApiRoute, CORS_HEADERS } from "./routes.ts";
+import { handleApiRoute } from "./routes.ts";
+import {
+  checkRequest,
+  corsHeaders,
+  createSecurityContext,
+  type SecurityContext,
+} from "./security.ts";
 
 export interface HttpServerOptions {
   port?: number;
   host?: string;
   db?: Database;
   uiDir?: string;
+  /** Fixed token for tests; generated per process otherwise. */
+  token?: string;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -113,42 +121,78 @@ export function createHttpServer(options: HttpServerOptions = {}) {
   const db = options.db || getDatabase();
   const uiDir = resolveUiDirectory(options.uiDir);
 
+  // The resolved port is only known after Bun.serve binds, so the context is
+  // filled in immediately after and read lazily by the handler.
+  let security: SecurityContext | null = null;
+
+  const withCors = (response: Response, origin: string | null): Response => {
+    if (!security) return response;
+    const headers = new Headers(response.headers);
+    for (const [key, value] of Object.entries(corsHeaders(origin, security))) {
+      headers.set(key, value);
+    }
+    return new Response(response.body, { status: response.status, headers });
+  };
+
   const server = Bun.serve({
     port,
     hostname: host,
     async fetch(req) {
       const url = new URL(req.url);
+      const origin = req.headers.get("origin");
+
+      if (!security) {
+        return new Response("RequireFlow is starting", { status: 503 });
+      }
+
+      const blocked = checkRequest(req, url, security);
+      if (blocked) {
+        return withCors(blocked, origin);
+      }
+
+      if (req.method.toUpperCase() === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: corsHeaders(origin, security),
+        });
+      }
 
       // Handle REST API routes
       if (url.pathname.startsWith("/api/")) {
-        const apiResponse = await handleApiRoute(req, url, db);
+        const apiResponse = await handleApiRoute(req, url, db, security.token);
         if (apiResponse) {
-          return apiResponse;
+          return withCors(apiResponse, origin);
         }
       }
 
       // Handle Static UI Assets
       const fullPath = resolveStaticFile(uiDir, url.pathname);
       if (!fullPath) {
-        return new Response("Not Found", {
-          status: 404,
-          headers: { "Content-Type": "text/plain", ...CORS_HEADERS },
-        });
+        return withCors(
+          new Response("Not Found", {
+            status: 404,
+            headers: { "Content-Type": "text/plain" },
+          }),
+          origin
+        );
       }
 
       const ext = path.extname(fullPath).toLowerCase();
       const contentType = MIME_TYPES[ext] || "application/octet-stream";
       const fileContent = fs.readFileSync(fullPath);
 
-      return new Response(fileContent, {
-        status: 200,
-        headers: {
-          "Content-Type": contentType,
-          ...CORS_HEADERS,
-        },
-      });
+      return withCors(
+        new Response(fileContent, {
+          status: 200,
+          headers: { "Content-Type": contentType },
+        }),
+        origin
+      );
     },
   });
+
+  const boundPort = server.port ?? port;
+  security = createSecurityContext(host, boundPort, options.token);
 
   return server;
 }

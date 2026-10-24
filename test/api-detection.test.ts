@@ -9,6 +9,11 @@ import os from "node:os";
 import path from "node:path";
 
 describe("Project detection is read-only over HTTP (RF-14)", () => {
+  const authHeaders = (): Record<string, string> => ({
+    "Content-Type": "application/json",
+    "X-RequireFlow-Token": "test-token",
+  });
+
   let db: Database;
   let server: ReturnType<typeof createHttpServer>;
   let baseUrl: string;
@@ -21,6 +26,7 @@ describe("Project detection is read-only over HTTP (RF-14)", () => {
       host: "127.0.0.1",
       db,
       uiDir: fs.mkdtempSync(path.join(os.tmpdir(), "rf-detection-ui-")),
+      token: "test-token",
     });
     baseUrl = `http://127.0.0.1:${server.port}`;
   });
@@ -63,7 +69,7 @@ describe("Project detection is read-only over HTTP (RF-14)", () => {
     const dir = freshDir();
     const created = await fetch(`${baseUrl}/api/projects`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({ name: "detected-project", rootPath: dir }),
     });
     const project = await readJson<Project>(created);
@@ -84,7 +90,7 @@ describe("Project detection is read-only over HTTP (RF-14)", () => {
 
     const created = await fetch(`${baseUrl}/api/projects`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({ name: "nested-project", rootPath: dir }),
     });
     const project = await readJson<Project>(created);

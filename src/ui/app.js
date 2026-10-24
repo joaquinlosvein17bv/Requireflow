@@ -15,15 +15,38 @@ const state = {
 };
 
   // --- API Client ---
+  // The mutation token is issued per server process and read from the
+  // origin-restricted health endpoint; another site cannot read it.
+  let apiToken = null;
+
+  async function ensureApiToken() {
+    if (apiToken) return apiToken;
+    try {
+      const res = await fetch("/api/health");
+      if (res.ok) {
+        const data = await res.json();
+        apiToken = data.token || null;
+      }
+    } catch {
+      apiToken = null;
+    }
+    return apiToken;
+  }
+
   async function fetchAPI(endpoint, options = {}) {
     try {
-      const res = await fetch(endpoint, {
-        headers: {
-          "Content-Type": "application/json",
-          ...(options.headers || {}),
-        },
-        ...options,
-      });
+      const method = (options.method || "GET").toUpperCase();
+      const headers = {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      };
+
+      if (method !== "GET" && method !== "HEAD") {
+        const token = await ensureApiToken();
+        if (token) headers["X-RequireFlow-Token"] = token;
+      }
+
+      const res = await fetch(endpoint, { ...options, method, headers });
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
