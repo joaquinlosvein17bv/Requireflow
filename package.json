@@ -10,7 +10,7 @@
     "start": "bun run src/cli/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build --compile --minify --sourcemap ./bin/requireflow.ts --outfile dist/requireflow",
+    "build": "bun build --compile --minify --sourcemap ./bin/requireflow.ts --outfile dist/requireflow && bun run scripts/bundle-ui.ts",
     "ui:dev": "bun run src/server/http.ts"
   },
   "devDependencies": {

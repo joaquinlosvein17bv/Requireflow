@@ -1,0 +1,92 @@
+import { describe, it, expect, afterEach } from "bun:test";
+import { Database } from "bun:sqlite";
+import { createDatabase } from "../src/db/connection.ts";
+import { createHttpServer, resolveUiDirectory } from "../src/server/http.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+describe("Dashboard resolution and packaging (RF-21)", () => {
+  let db: Database;
+  let originalCwd = process.cwd();
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    if (db) db.close();
+  });
+
+  function foreignProject(): string {
+    originalCwd = process.cwd();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rf-foreign-"));
+    tempDirs.push(dir);
+    fs.mkdirSync(path.join(dir, "src", "ui"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "src", "ui", "index.html"),
+      "<html><body>FOREIGN PROJECT UI</body></html>"
+    );
+    return dir;
+  }
+
+  it("serves the bundled dashboard without an explicit uiDir", async () => {
+    db = createDatabase(":memory:");
+    const server = createHttpServer({ port: 0, host: "127.0.0.1", db });
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("<title>RequireFlow");
+      expect(html).toContain('id="listTodo"');
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("never resolves the dashboard from another project's working directory", () => {
+    const foreign = foreignProject();
+    process.chdir(foreign);
+
+    const resolved = resolveUiDirectory();
+    const indexHtml = fs.readFileSync(path.join(resolved, "index.html"), "utf8");
+
+    expect(indexHtml).not.toContain("FOREIGN PROJECT UI");
+    expect(indexHtml).toContain("<title>RequireFlow");
+  });
+
+  it("keeps serving assets after the working directory changes", async () => {
+    db = createDatabase(":memory:");
+    const foreign = foreignProject();
+    process.chdir(foreign);
+
+    const server = createHttpServer({ port: 0, host: "127.0.0.1", db });
+    try {
+      const css = await fetch(`http://127.0.0.1:${server.port}/styles.css`);
+      expect(css.status).toBe(200);
+      expect(css.headers.get("content-type")).toContain("text/css");
+      const body = await css.text();
+      expect(body.length).toBeGreaterThan(100);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("rejects path traversal outside the dashboard directory", async () => {
+    db = createDatabase(":memory:");
+    const server = createHttpServer({ port: 0, host: "127.0.0.1", db });
+    try {
+      const secret = path.join(os.tmpdir(), `rf-secret-${Date.now()}.txt`);
+      fs.writeFileSync(secret, "TOPSECRET");
+      const res = await fetch(
+        `http://127.0.0.1:${server.port}/..%2f..%2f${encodeURIComponent(path.basename(secret))}`
+      );
+      const body = await res.text();
+      expect(body).not.toContain("TOPSECRET");
+      fs.rmSync(secret, { force: true });
+    } finally {
+      server.stop();
+    }
+  });
+});

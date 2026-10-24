@@ -15,7 +15,7 @@ export interface HttpServerOptions {
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
-  ".js": "application/javascript; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
@@ -23,25 +23,87 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-export function resolveUiDirectory(customDir?: string): string {
-  if (customDir && fs.existsSync(customDir)) {
-    return customDir;
+function hasDashboardFiles(dir: string): boolean {
+  try {
+    return fs.statSync(path.join(dir, "index.html")).isFile();
+  } catch {
+    return false;
   }
-  // Try src/ui or relative to current file or global home config
-  const candidates = [
-    path.resolve(process.cwd(), "src", "ui"),
-    path.resolve(import.meta.dir, "..", "ui"),
-    path.resolve(process.cwd(), "public"),
-    path.join(os.homedir(), ".requireflow", "ui"),
-  ];
+}
+
+/**
+ * Resolves the dashboard directory without ever consulting `process.cwd()`.
+ *
+ * Looking at the working directory first meant that running the global binary
+ * inside any project owning a `src/ui` folder served that project's UI (and
+ * 404s for its assets). The order below only considers the explicit override,
+ * the packaged layout next to the executable, and the module-relative source
+ * layout.
+ */
+export function resolveUiDirectory(customDir?: string): string {
+  const candidates: string[] = [];
+
+  if (customDir) {
+    candidates.push(path.resolve(customDir));
+  }
+
+  const envDir = process.env.REQUIREFLOW_UI_DIR;
+  if (envDir) {
+    candidates.push(path.resolve(envDir));
+  }
+
+  // Packaged layout: <directory of the running executable>/ui
+  candidates.push(path.resolve(path.dirname(process.execPath), "ui"));
+
+  // Source layout: this module lives in <root>/src/server, the UI in <root>/src/ui
+  candidates.push(path.resolve(import.meta.dir, "..", "ui"));
+
+  // Legacy user-level fallback
+  candidates.push(path.join(os.homedir(), ".requireflow", "ui"));
 
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
+    if (hasDashboardFiles(candidate)) {
       return candidate;
     }
   }
 
-  return path.resolve(import.meta.dir, "..", "ui");
+  throw new Error(
+    `RequireFlow dashboard files not found. Looked in: ${candidates.join(", ")}. ` +
+      `Reinstall the binary or set REQUIREFLOW_UI_DIR to a directory containing index.html.`
+  );
+}
+
+/**
+ * Maps a request path onto the dashboard directory, refusing anything that
+ * escapes it. Decoding happens before resolution so encoded traversal
+ * (`%2e%2e%2f`) is contained as well.
+ */
+export function resolveStaticFile(uiDir: string, pathname: string): string | null {
+  const uiRoot = path.resolve(uiDir);
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+
+  if (decoded.includes("\0")) {
+    return null;
+  }
+
+  const relative = decoded === "/" || decoded === "" ? "/index.html" : decoded;
+  const fullPath = path.resolve(uiRoot, `.${relative}`);
+
+  if (fullPath !== uiRoot && !fullPath.startsWith(uiRoot + path.sep)) {
+    return null;
+  }
+
+  try {
+    return fs.statSync(fullPath).isFile() ? fullPath : null;
+  } catch {
+    return null;
+  }
 }
 
 export function createHttpServer(options: HttpServerOptions = {}) {
@@ -65,31 +127,24 @@ export function createHttpServer(options: HttpServerOptions = {}) {
       }
 
       // Handle Static UI Assets
-      let filePath = url.pathname;
-      if (filePath === "/" || filePath === "") {
-        filePath = "/index.html";
-      }
-
-      const safeSuffix = path.normalize(filePath).replace(/^(\.\.[\/\\])+/, "");
-      const fullPath = path.join(uiDir, safeSuffix);
-
-      if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-        const ext = path.extname(fullPath).toLowerCase();
-        const contentType = MIME_TYPES[ext] || "application/octet-stream";
-        const fileContent = fs.readFileSync(fullPath);
-
-        return new Response(fileContent, {
-          status: 200,
-          headers: {
-            "Content-Type": contentType,
-            ...CORS_HEADERS,
-          },
+      const fullPath = resolveStaticFile(uiDir, url.pathname);
+      if (!fullPath) {
+        return new Response("Not Found", {
+          status: 404,
+          headers: { "Content-Type": "text/plain", ...CORS_HEADERS },
         });
       }
 
-      return new Response("Not Found", {
-        status: 404,
-        headers: { "Content-Type": "text/plain", ...CORS_HEADERS },
+      const ext = path.extname(fullPath).toLowerCase();
+      const contentType = MIME_TYPES[ext] || "application/octet-stream";
+      const fileContent = fs.readFileSync(fullPath);
+
+      return new Response(fileContent, {
+        status: 200,
+        headers: {
+          "Content-Type": contentType,
+          ...CORS_HEADERS,
+        },
       });
     },
   });
