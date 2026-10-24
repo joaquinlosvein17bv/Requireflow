@@ -4,6 +4,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/**
+ * Windows keeps a freshly closed WAL file locked for a few milliseconds, so
+ * cleanup retries instead of failing the assertion that came before it.
+ */
+function removeWithRetry(target: string): void {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      fs.rmSync(target, { force: true });
+      return;
+    } catch {
+      Bun.sleepSync(20);
+    }
+  }
+}
+
 describe("Database connection lifecycle (RF-17)", () => {
   const tempFiles: string[] = [];
 
@@ -11,7 +26,7 @@ describe("Database connection lifecycle (RF-17)", () => {
     closeDatabase();
     for (const file of tempFiles.splice(0)) {
       for (const suffix of ["", "-wal", "-shm"]) {
-        fs.rmSync(file + suffix, { force: true });
+        removeWithRetry(file + suffix);
       }
     }
   });

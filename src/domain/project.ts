@@ -4,12 +4,16 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { getDatabase } from "../db/connection.ts";
 import { seedDefaultSections } from "./section.ts";
+import { normalizeRootPath, isInsideRoot } from "./root-path.ts";
+
+export { normalizeRootPath } from "./root-path.ts";
 
 export interface Project {
   id: string;
   name: string;
   description: string | null;
   root_path: string | null;
+  root_key: string | null;
   archive_threshold_hours: number;
   created_at: string;
   updated_at: string;
@@ -21,6 +25,16 @@ export interface ProjectWithStats extends Project {
   in_progress_count?: number;
   done_count?: number;
   archived_count?: number;
+}
+
+export interface ProjectDetection {
+  project: Project | null;
+  /** Absolute path the detection used (git root when available). */
+  rootPath: string;
+  /** Normalized identity of `rootPath`. */
+  rootKey: string;
+  isLinked: boolean;
+  source: "exact" | "nested" | "none";
 }
 
 export function findGitRoot(startDir: string = process.cwd()): string | null {
@@ -39,42 +53,140 @@ export function findGitRoot(startDir: string = process.cwd()): string | null {
   return null;
 }
 
+/** Resolves the directory a project identity should be derived from. */
+export function resolveProjectRoot(cwd: string = process.cwd()): string {
+  return findGitRoot(cwd) || path.resolve(cwd);
+}
+
+export function getProjectByRootKey(
+  rootKey: string,
+  db: Database = getDatabase()
+): Project | null {
+  return db
+    .query("SELECT * FROM projects WHERE root_key = ?")
+    .get(rootKey) as Project | null;
+}
+
+/**
+ * Detects the project that owns a directory without creating anything.
+ *
+ * Exact root matches win. Inside a git repository the git root is the identity,
+ * so `src/domain` resolves to its project and a nested checkout never inherits
+ * an umbrella project registered on its parent directory. For plain
+ * directories, the deepest registered root containing the path is used.
+ */
+export function detectProject(
+  cwd: string = process.cwd(),
+  db: Database = getDatabase()
+): ProjectDetection {
+  const gitRoot = findGitRoot(cwd);
+  const rootPath = gitRoot || path.resolve(cwd);
+  const rootKey = normalizeRootPath(rootPath);
+
+  const exact = getProjectByRootKey(rootKey, db);
+  if (exact) {
+    return { project: exact, rootPath, rootKey, isLinked: true, source: "exact" };
+  }
+
+  // A git root that is not registered is a different project, even if some
+  // registered root contains it on disk.
+  if (gitRoot) {
+    return { project: null, rootPath, rootKey, isLinked: false, source: "none" };
+  }
+
+  const candidates = db
+    .query("SELECT * FROM projects WHERE root_key IS NOT NULL")
+    .all() as Project[];
+
+  let best: Project | null = null;
+  let bestLength = -1;
+  for (const candidate of candidates) {
+    const key = candidate.root_key;
+    if (!key || !isInsideRoot(rootKey, key)) continue;
+    if (key.length > bestLength) {
+      best = candidate;
+      bestLength = key.length;
+    }
+  }
+
+  if (best) {
+    return { project: best, rootPath, rootKey, isLinked: true, source: "nested" };
+  }
+
+  return { project: null, rootPath, rootKey, isLinked: false, source: "none" };
+}
+
+/** Projects whose stored root is missing on disk, a symptom of old name collisions. */
+export function findProjectsWithMissingRoots(db: Database = getDatabase()): Project[] {
+  const projects = db
+    .query("SELECT * FROM projects WHERE root_path IS NOT NULL")
+    .all() as Project[];
+
+  return projects.filter((project) => {
+    const rootPath = project.root_path;
+    return rootPath !== null && !fs.existsSync(rootPath);
+  });
+}
+
 export function resolveCurrentProject(
   cwd: string = process.cwd(),
   db: Database = getDatabase()
 ): Project {
-  const gitRoot = findGitRoot(cwd);
-  const targetPath = gitRoot || path.resolve(cwd);
-  const projectName = path.basename(targetPath) || "default-project";
+  const rootPath = resolveProjectRoot(cwd);
+  const projectName = path.basename(rootPath) || "default-project";
 
-  return getOrCreateProject(projectName, targetPath, db);
+  return getOrCreateProject(projectName, rootPath, db);
 }
 
+/**
+ * Finds or creates the project that owns `rootPath`.
+ *
+ * Identity is the normalized root path, never the name: two repositories whose
+ * directory is called `backend` are different projects. A project is adopted by
+ * name only when it is the single project with that display name and it has no
+ * root yet (rows created from the dashboard without a path).
+ */
 export function getOrCreateProject(
   name: string,
   rootPath?: string,
   db: Database = getDatabase()
 ): Project {
-  const existing = db
-    .query("SELECT * FROM projects WHERE name = ?")
-    .get(name) as Project | null;
+  const rootKey = rootPath ? normalizeRootPath(rootPath) : null;
 
-  if (existing) {
-    if (rootPath && existing.root_path !== rootPath) {
-      db.run(
-        "UPDATE projects SET root_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [rootPath, existing.id]
-      );
-      return { ...existing, root_path: rootPath };
+  if (rootKey) {
+    const existing = getProjectByRootKey(rootKey, db);
+    if (existing) {
+      return existing;
     }
-    return existing;
+  }
+
+  const unlinked = db
+    .query("SELECT * FROM projects WHERE name = ? AND root_path IS NULL")
+    .all(name) as Project[];
+
+  if (unlinked.length === 1) {
+    const candidate = unlinked[0];
+    if (candidate === undefined) {
+      // Unreachable: guarded by the length check, kept for the type checker.
+      throw new Error("Unexpected empty project candidate");
+    }
+
+    if (!rootKey) {
+      return candidate;
+    }
+
+    db.run(
+      "UPDATE projects SET root_path = ?, root_key = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [rootPath ?? null, rootKey, candidate.id]
+    );
+    return db.query("SELECT * FROM projects WHERE id = ?").get(candidate.id) as Project;
   }
 
   const id = crypto.randomUUID();
   db.run(
-    `INSERT INTO projects (id, name, description, root_path, archive_threshold_hours)
-     VALUES (?, ?, ?, ?, ?)`,
-    [id, name, `Project for ${name}`, rootPath || null, 24]
+    `INSERT INTO projects (id, name, description, root_path, root_key, archive_threshold_hours)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, name, `Project for ${name}`, rootPath || null, rootKey, 24]
   );
 
   seedDefaultSections(id, db);
@@ -92,14 +204,18 @@ export function createProject(
   db: Database = getDatabase()
 ): Project {
   const id = crypto.randomUUID();
+  const rootPath = data.rootPath || null;
+  const rootKey = rootPath ? normalizeRootPath(rootPath) : null;
+
   db.run(
-    `INSERT INTO projects (id, name, description, root_path, archive_threshold_hours)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO projects (id, name, description, root_path, root_key, archive_threshold_hours)
+     VALUES (?, ?, ?, ?, ?, ?)`,
     [
       id,
       data.name,
       data.description || null,
-      data.rootPath || null,
+      rootPath,
+      rootKey,
       data.archiveThresholdHours ?? 24,
     ]
   );
@@ -146,7 +262,7 @@ export function listProjects(db: Database = getDatabase()): ProjectWithStats[] {
 
 export function updateProject(
   id: string,
-  updates: Partial<Pick<Project, "name" | "description" | "root_path" | "archive_threshold_hours">>,
+  updates: Partial<Pick<Project, "name" | "description" | "root_path" | "archive_threshold_hours" | "root_key">>,
   db: Database = getDatabase()
 ): Project | null {
   const fields: string[] = [];
@@ -163,6 +279,8 @@ export function updateProject(
   if (updates.root_path !== undefined) {
     fields.push("root_path = ?");
     values.push(updates.root_path);
+    fields.push("root_key = ?");
+    values.push(updates.root_path ? normalizeRootPath(updates.root_path) : null);
   }
   if (updates.archive_threshold_hours !== undefined) {
     fields.push("archive_threshold_hours = ?");

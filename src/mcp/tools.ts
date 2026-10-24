@@ -4,7 +4,7 @@ import { z } from "zod";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 import { getDatabase } from "../db/connection.ts";
-import { resolveCurrentProject, getProject, listProjects } from "../domain/project.ts";
+import { resolveCurrentProject, getProject, listProjects, detectProject } from "../domain/project.ts";
 import {
   createTask,
   listTasks,
@@ -79,7 +79,7 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
   registerDual(
     "rf_project_detect",
     "project_current",
-    "Auto-resolve or detect the active project from current directory or Git root",
+    "Detect the project that owns the working directory (read-only; never creates a project)",
     (name, description) =>
       server.tool(
         name,
@@ -90,14 +90,25 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
         (args) =>
           runTool("rf_project_detect", () => {
             const targetCwd = args.cwd || process.cwd();
-            const allProjects = listProjects(db);
-            const matched = allProjects.find(
-              (p) => p.root_path && path.resolve(p.root_path) === path.resolve(targetCwd)
-            );
-            const project = resolveCurrentProject(targetCwd, db);
+            const detection = detectProject(targetCwd, db);
+
+            if (detection.project) {
+              return {
+                ...detection.project,
+                is_directory_linked: true,
+                detection_source: detection.source,
+                detected_root: detection.rootPath,
+              };
+            }
+
             return {
-              ...project,
-              is_directory_linked: Boolean(matched),
+              id: null,
+              name: path.basename(detection.rootPath) || "default-project",
+              root_path: detection.rootPath,
+              root_key: detection.rootKey,
+              is_directory_linked: false,
+              detection_source: detection.source,
+              detected_root: detection.rootPath,
             };
           })
       )
