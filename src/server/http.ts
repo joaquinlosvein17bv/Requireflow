@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { Database } from "bun:sqlite";
 import { getDatabase } from "../db/connection.ts";
+import { startAutoArchive } from "../domain/archive.ts";
 import { handleApiRoute, CORS_HEADERS } from "./routes.ts";
 
 export interface HttpServerOptions {
@@ -154,6 +155,8 @@ export function createHttpServer(options: HttpServerOptions = {}) {
 
 export async function startHttpServer(options: HttpServerOptions = {}) {
   const server = createHttpServer(options);
+  const db = options.db || getDatabase();
+  startAutoArchive(db);
   console.log(`RequireFlow HTTP Server running at http://${server.hostname}:${server.port}`);
   return server;
 }

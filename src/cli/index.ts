@@ -13,6 +13,7 @@ import {
 } from "../domain/task.ts";
 import { archiveDoneTasks } from "../domain/archive.ts";
 import { calculateProjectMetrics, formatDuration } from "../domain/efficiency.ts";
+import { flagToBoolean, flagToNumber } from "./flags.ts";
 import { startHttpServer } from "../server/http.ts";
 import { startMcpServer } from "../mcp/server.ts";
 
@@ -45,13 +46,21 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
     const isShort = !isLong && arg.startsWith("-");
 
     if (isLong || isShort) {
-      const key = isLong ? arg.slice(2) : arg.slice(1);
+      const raw = isLong ? arg.slice(2) : arg.slice(1);
+      const separator = raw.indexOf("=");
+
+      if (separator > 0) {
+        flags[raw.slice(0, separator)] = raw.slice(separator + 1);
+        i += 1;
+        continue;
+      }
+
       const next = args[i + 1];
       if (next !== undefined && !next.startsWith("-")) {
-        flags[key] = next;
+        flags[raw] = next;
         i += 2;
       } else {
-        flags[key] = true;
+        flags[raw] = true;
         i += 1;
       }
     } else {
@@ -241,11 +250,17 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
 
     case "archive": {
       const project = resolveCurrentProject(process.cwd(), db);
-      const force = flags["force"] !== false; // default true
-      const threshold = flags["threshold"] ? Number(flags["threshold"]) : undefined;
+      const force = flagToBoolean(flags["force"], false);
+      const threshold = flagToNumber(flags["threshold"] ?? flags["hours"], {
+        min: 0,
+        label: "--threshold (hours)",
+      });
 
       const result = archiveDoneTasks(project.id, force, threshold, db);
       console.log(`📦 Archived ${result.archivedCount} task(s) from 'Done' to permanent History for "${project.name}".`);
+      if (!force && result.archivedCount === 0) {
+        console.log("   (Tasks stay on the board until they reach the project's archive threshold. Use --force to flush now.)");
+      }
       break;
     }
 

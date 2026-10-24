@@ -13,7 +13,8 @@ export function archiveDoneTasks(
   projectId?: string,
   forceManual: boolean = false,
   thresholdHours?: number,
-  db: Database = getDatabase()
+  db: Database = getDatabase(),
+  now: Date = new Date()
 ): ArchiveResult {
   let projectThreshold = thresholdHours;
   if (projectThreshold === undefined && projectId) {
@@ -35,7 +36,7 @@ export function archiveDoneTasks(
   }
 
   if (!forceManual) {
-    const thresholdIso = new Date(Date.now() - projectThreshold * 3600 * 1000).toISOString();
+    const thresholdIso = new Date(now.getTime() - projectThreshold * 3600 * 1000).toISOString();
     conditions.push("t.completed_at <= ?");
     params.push(thresholdIso);
   }
@@ -54,7 +55,7 @@ export function archiveDoneTasks(
   }
 
   const archivedTaskIds: string[] = [];
-  const now = new Date().toISOString();
+  const nowIsoValue = now.toISOString();
 
   const insertHistoryStmt = db.prepare(`
     INSERT OR IGNORE INTO history (
@@ -96,14 +97,14 @@ export function archiveDoneTasks(
         task.tags,
         task.started_at,
         task.completed_at,
-        now,
+        nowIsoValue,
         cycleSecs,
         totalMs,
         task.section_name ?? null,
         task.section_color ?? null
       );
 
-      updateTaskStmt.run(now, task.id);
+      updateTaskStmt.run(nowIsoValue, task.id);
       archivedTaskIds.push(task.id);
     }
   })();
@@ -112,4 +113,68 @@ export function archiveDoneTasks(
     archivedCount: archivedTaskIds.length,
     taskIds: archivedTaskIds,
   };
+}
+
+export interface AutoArchiveSummary {
+  archivedCount: number;
+  taskIds: string[];
+  projectsChecked: number;
+}
+
+/**
+ * Archival pass for every project using its configured threshold.
+ *
+ * RequireFlow is local-first and has no daemon, so this runs opportunistically:
+ * once when a long-lived process starts (HTTP/MCP) and then on an interval, and
+ * it catches up on the next start after a period with nothing running. It is
+ * idempotent, so running it twice never duplicates history (RF-08).
+ */
+export function autoArchiveAllProjects(
+  db: Database = getDatabase(),
+  now: Date = new Date()
+): AutoArchiveSummary {
+  const projects = db.query("SELECT id, archive_threshold_hours FROM projects").all() as Array<{
+    id: string;
+    archive_threshold_hours: number;
+  }>;
+
+  let archivedCount = 0;
+  const taskIds: string[] = [];
+
+  for (const project of projects) {
+    const result = archiveDoneTasks(
+      project.id,
+      false,
+      project.archive_threshold_hours,
+      db,
+      now
+    );
+    archivedCount += result.archivedCount;
+    taskIds.push(...result.taskIds);
+  }
+
+  return { archivedCount, taskIds, projectsChecked: projects.length };
+}
+
+/**
+ * Starts the periodic archival pass. Returns a stop function.
+ * The timer does not keep the process alive on its own.
+ */
+export function startAutoArchive(
+  db: Database = getDatabase(),
+  intervalMs: number = 60_000
+): () => void {
+  const run = (): void => {
+    try {
+      autoArchiveAllProjects(db);
+    } catch (err) {
+      console.error("[RequireFlow] Automatic archival failed:", err);
+    }
+  };
+
+  run();
+  const timer = setInterval(run, intervalMs);
+  timer.unref?.();
+
+  return () => clearInterval(timer);
 }
