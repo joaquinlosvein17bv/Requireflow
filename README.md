@@ -52,11 +52,11 @@ Tanto si es una mejora minúscula de 5 minutos como si es una arquitectura grand
 ## 🧭 Características Principales
 
 1. **Local-First Zero Config**: Cero servidores externos. Opera sobre un archivo SQLite embebido en `~/.requireflow/requireflow.db` con modo WAL ultrarrápido.
-2. **Protocolo MCP para Agentes de IA**: Expone 10 herramientas nativas sobre `stdio` (`rf_task_add`, `rf_task_next`, `rf_task_start`, `rf_task_complete`, etc.) para que Cursor, Claude Code, Antigravity o Windsurf gestionen el backlog de forma autónoma.
+2. **Protocolo MCP para Agentes de IA**: Expone 12 herramientas nativas sobre `stdio` (`rf_project_detect`, `rf_project_add`, `rf_task_add`, `rf_task_next`, `rf_task_start`, `rf_task_complete`, etc.) para que Cursor, Claude Code, Antigravity o Windsurf gestionen el backlog de forma autónoma.
 3. **Agrupación por Tema y Complejidad**:
    - **Secciones temáticas**: Frontend, Backend, UI, Database, Bugfixes (con colores personalizables).
    - **Estimación**: Story points y prioridades (`blocker`, `high`, `medium`, `low`).
-4. **Archivado Dual (Kanban Limpio)**: Resuelve el problema del "Done infinito". Las tareas completadas se archivan automáticamente tras 24h o manualmente con un clic/comando, pasando al Historial Permanente con búsqueda FTS5.
+4. **Archivado Dual (Kanban Limpio)**: Resuelve el problema del "Done infinito". Las tareas completadas esperan el umbral configurado por proyecto (`archive_threshold_hours`, 24h por defecto) y después se archivan automáticamente al Historial Permanente con búsqueda FTS5. El archivado manual (`--force`) sigue disponible para limpiar el tablero al instante. El paso automático corre mientras haya un proceso vivo (`requireflow ui`, `requireflow mcp` o cualquier comando); si nada estuvo corriendo, se pone al día en el siguiente arranque.
 5. **Dashboard Web Vanilla Embebido**: Interfaz HTML5/CSS3/JS servida con `Bun.serve()` sin webpack, sin react y con respuesta en `< 5ms`.
 6. **Métricas de Eficiencia**: Mide el Tiempo de Ciclo real (`started_at` a `completed_at`), Lead Time y velocidad de resolución de errores.
 
@@ -93,7 +93,8 @@ requireflow ui --port 4242
 ### 5. Compilar Binario Autónomo
 ```bash
 bun run build
-# Genera dist/requireflow (o dist/requireflow.exe en Windows)
+# Genera dist/requireflow (o dist/requireflow.exe en Windows) y copia el
+# dashboard a dist/ui, que es lo que resuelve el binario en cualquier cwd.
 ```
 
 ---
@@ -111,6 +112,7 @@ requireflow status
 requireflow add "Soportar autenticación con Google" -t feature -p high -s Backend
 
 # Pedir la siguiente tarea de mayor prioridad para trabajar
+# (considera las columnas To Do y Backlog, respetando prioridad y orden del tablero)
 requireflow next
 requireflow next --json
 
@@ -120,17 +122,26 @@ requireflow start <task-id>
 # Completar una tarea (calcula tiempo de ciclo y guarda notas de solución)
 requireflow done <task-id> -m "Implementado con OAuth2 y tokens JWT"
 
-# Archivar tareas completadas al historial permanente
-requireflow archive --force
-
 # Abrir el Dashboard Web en el navegador
 requireflow ui --port 4242
 
 # Iniciar servidor MCP por stdio
 requireflow mcp
 
-# Ver estadísticas de eficiencia y velocidad de desarrollo
+# Archivar tareas completadas
+#   sin --force respeta archive_threshold_hours del proyecto
+#   --force limpia la columna Done al instante
+requireflow archive
+requireflow archive --force
+requireflow archive --threshold 6
+
+# Ver estadísticas de eficiencia y velocidad de desarrollo (ventana configurable)
 requireflow stats
+requireflow stats --days 90
+
+# Generar datos de demostración en una base separada (~/.requireflow/demo.db)
+bun run src/db/seed.ts
+bun run src/db/seed.ts --reset
 ```
 
 ---
@@ -165,16 +176,42 @@ Para conectar `requireflow` con Cursor, Claude Desktop, Antigravity, Cline o Win
 ### Herramientas MCP Registradas:
 | Herramienta | Alias | Propósito |
 | :--- | :--- | :--- |
-| `rf_project_detect` | `project_current` | Detecta el repositorio o proyecto activo desde el directorio de trabajo. |
+| `rf_project_detect` | `project_current` | Detecta el proyecto dueño del directorio de trabajo. **Solo lectura**: nunca crea proyectos. |
+| `rf_project_list` | `project_list` | Lista los proyectos registrados con su ruta raíz y cantidad de tareas activas. |
+| `rf_project_add` | `project_create` | Registra un proyecto explícitamente. Con `rootPath` es idempotente: devuelve el existente. |
 | `rf_task_add` | `task_create` | Guarda una idea rápida en el backlog con su tema, tipo, prioridad y descripción. |
-| `rf_task_next` | `task_next` | Obtiene la siguiente tarea lista de mayor prioridad (`blocker > high > medium > low`). |
-| `rf_task_start` | `task_start` | Marca la tarea en progreso y comienza a cronometrar el tiempo de ciclo (`started_at`). |
-| `rf_task_complete` | `task_complete` | Marca la tarea completada, calcula la duración exacta y guarda notas técnicas. |
-| `rf_task_list` | `task_list` | Lista tareas activas con filtros por sección, estado o prioridad. |
-| `rf_task_update` | `task_update` | Modifica título, prioridad, sección o descripción. |
-| `rf_archive_run` | `task_archive_done` | Limpia la columna de completadas moviéndolas al historial permanente. |
-| `rf_history_search` | `history_list` | Búsqueda semántica FTS5 en tareas pasadas y notas de solución. |
-| `rf_efficiency_stats`| `efficiency_stats` | Calcula tiempo de ciclo promedio, throughput y velocidad de bugfix. |
+| `rf_task_next` | `task_next` | Siguiente tarea elegible (`backend`/`todo`) según prioridad y orden del tablero. |
+| `rf_task_start` | `task_start` | Marca la tarea en progreso y comienza a cronometrar el ciclo (`started_at`). Reabre tareas completadas o archivadas limpiando sus marcas anteriores. |
+| `rf_task_complete` | `task_complete` | Marca la tarea completada, registra un ciclo y guarda notas técnicas. Repetirla no altera nada. |
+| `rf_task_list` | `task_list` | Lista tareas activas con filtros por sección, estado, prioridad o tipo. |
+| `rf_task_update` | `task_update` | Modifica título, prioridad, sección, tipo, estado o descripción. Las transiciones de estado ilegales se rechazan. |
+| `rf_archive_run` | `task_archive_done` | Archiva tareas completadas. Respeta el umbral salvo `forceManual: true`. |
+| `rf_history_search` | `history_list` | Búsqueda FTS5 (ranking BM25) en tareas pasadas y notas de solución. |
+| `rf_efficiency_stats`| `efficiency_stats` | Tiempo de ciclo, lead time, throughput y velocidad de bugfix para la ventana pedida. |
+
+> Todos los identificadores de proyecto deben existir. Si pasás un `projectId` inexistente la herramienta falla con un error explícito en lugar de escribir en otro proyecto.
+
+---
+
+## 🔒 API Local y Seguridad
+
+El dashboard y la API REST escuchan solo en loopback (`127.0.0.1`) y aplican tres controles independientes:
+
+1. **Host permitido**: solo `127.0.0.1`, `localhost` o `[::1]` con el puerto del servidor (protege contra DNS rebinding).
+2. **Origen permitido**: el CORS se responde únicamente al origen del propio servidor; pedidos cross-site no pueden leer ni escribir.
+3. **Token de mutación**: las operaciones que modifican datos (`POST`, `PATCH`, `PUT`, `DELETE`) requieren el header `X-RequireFlow-Token`. El dashboard lo obtiene de `GET /api/health`, que solo es legible desde el mismo origen.
+
+Para scripts locales:
+
+```bash
+TOKEN=$(curl -s http://127.0.0.1:4242/api/health | jq -r .token)
+curl -X POST http://127.0.0.1:4242/api/projects \
+  -H "Content-Type: application/json" \
+  -H "X-RequireFlow-Token: $TOKEN" \
+  -d '{"name":"Mi proyecto"}'
+```
+
+El token no es autenticación de usuario: la frontera real sigue siendo el archivo SQLite local. Su objetivo es cerrar la superficie de ataque del navegador.
 
 ---
 
@@ -185,4 +222,5 @@ Para conectar `requireflow` con Cursor, Claude Desktop, Antigravity, Cline o Win
 | `REQUIREFLOW_DB_PATH` | `~/.requireflow/requireflow.db` | Ubicación del archivo de base de datos SQLite |
 | `REQUIREFLOW_PORT` | `4242` | Puerto del servidor web y API REST |
 | `REQUIREFLOW_HOST` | `127.0.0.1` | Host de enlace del servidor HTTP |
-| `REQUIREFLOW_ARCHIVE_HOURS` | `24` | Horas de inactividad antes de auto-archivar tareas completadas |
+| `REQUIREFLOW_UI_DIR` | auto | Directorio con `index.html` para servir un dashboard propio (el binario trae el suyo en `dist/ui`) |
+| `REQUIREFLOW_DEMO_DB_PATH` | `~/.requireflow/demo.db` | Base separada que usa `bun run src/db/seed.ts`; nunca toca la base real |

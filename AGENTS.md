@@ -106,26 +106,27 @@ When interacting with tasks in any repository where RequireFlow is active:
 
 | Phase | Tool to Call | Purpose |
 | :--- | :--- | :--- |
-| **0. Project & Context Guard** | `rf_project_list` / `rf_project_detect` | **Mandatory**: Verify if `cwd` is linked to an existing project. If creating from scratch in a new folder, notify the user. If user asks for features but `cwd` is not linked, list existing projects and ask whether to add to an existing backlog or initialize a new one. |
+| **0. Project & Context Guard** | `rf_project_list` / `rf_project_detect` | **Mandatory**: Verify if `cwd` is linked to an existing project. `rf_project_detect` is **read-only** and returns `is_directory_linked`; it never creates anything. If the directory is not linked, list existing projects and ask whether to add to an existing backlog or initialize a new one with `rf_project_add` (`rootPath` makes it idempotent). |
 | **1. Intake** | `rf_task_add` | Create backlog item with priority (`blocker`, `high`, `medium`, `low`) and type (`feature`, `bugfix`, `chore`, `refactor`). |
-| **2. Autonomous Selection** | `rf_task_next` | Pull highest priority pending work (`blocker > high > medium > low`). |
+| **2. Autonomous Selection** | `rf_task_next` | Pull highest priority eligible work from To Do **and Backlog** (`blocker > high > medium > low`, then board position). |
 | **3. Before Coding** | `rf_task_start` | **Mandatory**: Start task clock to record `started_at` in UTC. |
 | **4. After Verification** | `rf_task_complete` | **Mandatory**: Record `completed_at`, compute cycle time, and log resolution notes. |
 | **5. Investigation** | `rf_history_search` | Search FTS5 full-text changelog for past fixes and context. |
-| **6. Board Cleanup** | `rf_archive_run` | Flush finished tasks from active Kanban to permanent History. |
+| **6. Board Cleanup** | `rf_archive_run` | Archive completed tasks. Respects the project threshold unless `forceManual: true` is passed. |
 
 ---
 
 ## 🛠️ Complete MCP Tool Reference
 
-1. `rf_project_detect`: Detects git repository or directory root, returning `is_directory_linked`.
+1. `rf_project_detect`: Read-only detection of the project that owns a directory, returning `is_directory_linked`. Never creates a project.
 2. `rf_project_list`: Lists all registered projects with active task counts and root paths.
-3. `rf_task_list`: Lists tasks with filters (`status`, `sectionId`, `priority`, `type`).
-4. `rf_task_next`: Fetches the highest priority pending item.
-5. `rf_task_add`: Creates task in backlog.
-6. `rf_task_start`: Starts task and timestamps `started_at`.
-7. `rf_task_complete`: Completes task, timestamps `completed_at`, calculates duration, stores notes.
-8. `rf_task_update`: Modifies title, priority, section, or notes.
-9. `rf_archive_run`: Manually flushes completed items to permanent history.
-10. `rf_history_search`: FTS5 semantic search in past work.
-11. `rf_efficiency_stats`: Computes average cycle time, lead time, throughput, and bugfix velocity.
+3. `rf_project_add`: Registers a project explicitly; with `rootPath` it returns the existing project instead of duplicating it.
+4. `rf_task_list`: Lists tasks with filters (`status`, `sectionId`, `priority`, `type`).
+5. `rf_task_next`: Highest priority eligible item from To Do or Backlog, respecting board position.
+6. `rf_task_add`: Creates task in backlog.
+7. `rf_task_start`: Starts task and timestamps `started_at`; reopens completed or archived tasks clearing their previous marks.
+8. `rf_task_complete`: Completes task, timestamps `completed_at`, records one work cycle, stores notes. Repeating it is a no-op.
+9. `rf_task_update`: Modifies title, priority, section, status, type, or notes. Illegal status transitions are rejected.
+10. `rf_archive_run`: Archives completed items respecting the project threshold unless `forceManual: true`.
+11. `rf_history_search`: FTS5 search (BM25 ranking) in past work.
+12. `rf_efficiency_stats`: Computes average cycle time, lead time, throughput, and bugfix velocity for the requested window.
