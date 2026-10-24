@@ -26,6 +26,9 @@ import {
   completeTask,
   getKanbanBoard,
   TaskValidationError,
+  TASK_TYPES,
+  TASK_PRIORITIES,
+  TASK_STATUSES,
   type TaskStatus,
   type TaskPriority,
   type TaskType,
@@ -38,6 +41,17 @@ export const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-RequireFlow-Token",
 };
+
+/** An error whose message is safe to return to the client. */
+class HttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
 
 export function jsonResponse(data: any, status: number = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -52,12 +66,138 @@ export function errorResponse(message: string, status: number = 400): Response {
   return jsonResponse({ error: message, status }, status);
 }
 
-async function parseJsonBody(req: Request): Promise<any> {
+async function readJsonBody(req: Request): Promise<Record<string, unknown>> {
+  let text: string;
   try {
-    return await req.json();
+    text = await req.text();
   } catch {
+    throw new HttpError(400, "Invalid JSON body");
+  }
+
+  if (text.trim() === "") {
     return {};
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new HttpError(400, "Invalid JSON body");
+  }
+
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new HttpError(400, "JSON body must be an object");
+  }
+
+  return parsed as Record<string, unknown>;
+}
+
+function requireText(value: unknown, field: string, maxLength: number): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new HttpError(400, `"${field}" is required and must be a non-empty string`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length > maxLength) {
+    throw new HttpError(400, `"${field}" must be at most ${maxLength} characters`);
+  }
+  return trimmed;
+}
+
+function optionalText(
+  value: unknown,
+  field: string,
+  maxLength: number
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    throw new HttpError(400, `"${field}" must be a string`);
+  }
+  if (value.length > maxLength) {
+    throw new HttpError(400, `"${field}" must be at most ${maxLength} characters`);
+  }
+  return value.trim();
+}
+
+function optionalEnum<T extends string>(
+  value: unknown,
+  field: string,
+  allowed: readonly T[]
+): T | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new HttpError(
+      422,
+      `"${field}" has an unsupported value "${String(value)}". Allowed: ${allowed.join(", ")}.`
+    );
+  }
+  return value as T;
+}
+
+function optionalInt(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number
+): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new HttpError(400, `"${field}" must be an integer`);
+  }
+  if (parsed < min || parsed > max) {
+    throw new HttpError(400, `"${field}" must be between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
+function optionalTags(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") {
+    if (value.length > 500) throw new HttpError(400, `"tags" must be at most 500 characters`);
+    return value;
+  }
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+    const joined = (value as string[]).join(",");
+    if (joined.length > 500) throw new HttpError(400, `"tags" must be at most 500 characters`);
+    return joined;
+  }
+  throw new HttpError(400, `"tags" must be a string or an array of strings`);
+}
+
+const COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+const NAMED_COLOR_PATTERN = /^[a-zA-Z]{3,20}$/;
+
+function optionalColor(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new HttpError(400, `"color" must be a string`);
+  }
+  const trimmed = value.trim();
+  if (!COLOR_PATTERN.test(trimmed) && !NAMED_COLOR_PATTERN.test(trimmed)) {
+    throw new HttpError(400, `"color" must be a hex colour (#rrggbb) or a CSS colour name`);
+  }
+  return trimmed;
+}
+
+interface IntParamOptions {
+  min: number;
+  max: number;
+  fallback: number;
+}
+
+function intParam(url: URL, name: string, options: IntParamOptions): number {
+  const raw = url.searchParams.get(name);
+  if (raw === null || raw.trim() === "") return options.fallback;
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new HttpError(400, `"${name}" must be an integer`);
+  }
+  if (parsed < options.min || parsed > options.max) {
+    throw new HttpError(400, `"${name}" must be between ${options.min} and ${options.max}`);
+  }
+  return parsed;
 }
 
 /**
@@ -125,20 +265,16 @@ export async function handleApiRoute(
     // --- Projects ---
     if (path === "/api/projects") {
       if (method === "GET") {
-        const projects = listProjects(db);
-        return jsonResponse(projects);
+        return jsonResponse(listProjects(db));
       }
       if (method === "POST") {
-        const body = await parseJsonBody(req);
-        if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
-          return errorResponse("Project name is required", 400);
-        }
+        const body = await readJsonBody(req);
         const created = createProject(
           {
-            name: body.name.trim(),
-            description: body.description,
-            rootPath: body.rootPath,
-            archiveThresholdHours: body.archiveThresholdHours,
+            name: requireText(body.name, "name", 200),
+            description: optionalText(body.description, "description", 2000) ?? undefined,
+            rootPath: optionalText(body.rootPath, "rootPath", 4096) ?? undefined,
+            archiveThresholdHours: optionalInt(body.archiveThresholdHours, "archiveThresholdHours", 0, 8760),
           },
           db
         );
@@ -193,8 +329,22 @@ export async function handleApiRoute(
         return jsonResponse(project);
       }
       if (method === "PATCH") {
-        const body = await parseJsonBody(req);
-        const updated = updateProject(projectId, body, db);
+        const body = await readJsonBody(req);
+        const updated = updateProject(
+          projectId,
+          {
+            name: body.name === undefined ? undefined : requireText(body.name, "name", 200),
+            description: optionalText(body.description, "description", 2000),
+            root_path: optionalText(body.rootPath, "rootPath", 4096),
+            archive_threshold_hours: optionalInt(
+              body.archiveThresholdHours,
+              "archiveThresholdHours",
+              0,
+              8760
+            ),
+          },
+          db
+        );
         if (!updated) return errorResponse("Project not found", 404);
         return jsonResponse(updated);
       }
@@ -210,20 +360,16 @@ export async function handleApiRoute(
     if (projectSectionsMatch) {
       const projectId = projectSectionsMatch;
       if (method === "GET") {
-        const sections = listSections(projectId, db);
-        return jsonResponse(sections);
+        return jsonResponse(listSections(projectId, db));
       }
       if (method === "POST") {
-        const body = await parseJsonBody(req);
-        if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
-          return errorResponse("Section name is required", 400);
-        }
+        const body = await readJsonBody(req);
         const section = createSection(
           {
             projectId,
-            name: body.name.trim(),
-            color: body.color,
-            position: body.position,
+            name: requireText(body.name, "name", 120),
+            color: optionalColor(body.color),
+            position: optionalInt(body.position, "position", 0, 100_000),
           },
           db
         );
@@ -235,8 +381,16 @@ export async function handleApiRoute(
     if (sectionMatch) {
       const sectionId = sectionMatch;
       if (method === "PATCH") {
-        const body = await parseJsonBody(req);
-        const updated = updateSection(sectionId, body, db);
+        const body = await readJsonBody(req);
+        const updated = updateSection(
+          sectionId,
+          {
+            name: body.name === undefined ? undefined : requireText(body.name, "name", 120),
+            color: optionalColor(body.color),
+            position: optionalInt(body.position, "position", 0, 100_000),
+          },
+          db
+        );
         if (!updated) return errorResponse("Section not found", 404);
         return jsonResponse(updated);
       }
@@ -252,16 +406,14 @@ export async function handleApiRoute(
     if (boardMatch && method === "GET") {
       const projectId = boardMatch;
       const sectionId = url.searchParams.get("sectionId") || undefined;
-      const board = getKanbanBoard(projectId, sectionId, db);
-      return jsonResponse(board);
+      return jsonResponse(getKanbanBoard(projectId, sectionId, db));
     }
 
     const backlogMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/backlog$/);
     if (backlogMatch && method === "GET") {
       const projectId = backlogMatch;
       const sectionId = url.searchParams.get("sectionId") || undefined;
-      const tasks = listTasks(projectId, { status: ["backlog", "todo"], sectionId }, db);
-      return jsonResponse(tasks);
+      return jsonResponse(listTasks(projectId, { status: ["backlog", "todo"], sectionId }, db));
     }
 
     // --- Project Tasks ---
@@ -269,41 +421,44 @@ export async function handleApiRoute(
     if (projectTasksMatch) {
       const projectId = projectTasksMatch;
       if (method === "GET") {
-        const status = url.searchParams.get("status") as TaskStatus | null;
-        const sectionId = url.searchParams.get("sectionId") || undefined;
-        const priority = url.searchParams.get("priority") as TaskPriority | null;
-        const type = url.searchParams.get("type") as TaskType | null;
-
-        const tasks = listTasks(
-          projectId,
-          {
-            status: status || undefined,
-            sectionId,
-            priority: priority || undefined,
-            type: type || undefined,
-          },
-          db
+        const status = optionalEnum(
+          url.searchParams.get("status") ?? undefined,
+          "status",
+          TASK_STATUSES
         );
-        return jsonResponse(tasks);
+        const priority = optionalEnum(
+          url.searchParams.get("priority") ?? undefined,
+          "priority",
+          TASK_PRIORITIES
+        );
+        const type = optionalEnum(
+          url.searchParams.get("type") ?? undefined,
+          "type",
+          TASK_TYPES
+        );
+        const sectionId = url.searchParams.get("sectionId") || undefined;
+
+        return jsonResponse(
+          listTasks(projectId, { status, sectionId, priority, type }, db)
+        );
       }
       if (method === "POST") {
-        const body = await parseJsonBody(req);
-        if (!body.title || typeof body.title !== "string" || !body.title.trim()) {
-          return errorResponse("Task title is required", 400);
-        }
+        const body = await readJsonBody(req);
         const created = createTask(
           {
             projectId,
-            title: body.title.trim(),
-            description: body.description,
-            sectionId: body.sectionId,
-            type: body.type,
-            priority: body.priority,
-            status: body.status,
-            position: body.position,
-            storyPoints: body.storyPoints,
-            tags: body.tags,
-            notes: body.notes,
+            title: requireText(body.title, "title", 500),
+            description: optionalText(body.description, "description", 20_000) ?? undefined,
+            sectionId: optionalText(body.sectionId, "sectionId", 200) ?? undefined,
+            type: optionalEnum(body.type, "type", TASK_TYPES) as TaskType | undefined,
+            priority: optionalEnum(body.priority, "priority", TASK_PRIORITIES) as
+              | TaskPriority
+              | undefined,
+            status: optionalEnum(body.status, "status", TASK_STATUSES),
+            position: optionalInt(body.position, "position", -100_000, 100_000),
+            storyPoints: optionalInt(body.storyPoints, "storyPoints", 0, 100),
+            tags: optionalTags(body.tags),
+            notes: optionalText(body.notes, "notes", 20_000) ?? undefined,
           },
           db
         );
@@ -321,8 +476,27 @@ export async function handleApiRoute(
         return jsonResponse(task);
       }
       if (method === "PATCH") {
-        const body = await parseJsonBody(req);
-        const updated = updateTask(taskId, body, db);
+        const body = await readJsonBody(req);
+        const updated = updateTask(
+          taskId,
+          {
+            title: body.title === undefined ? undefined : requireText(body.title, "title", 500),
+            description: optionalText(body.description, "description", 20_000),
+            priority: optionalEnum(body.priority, "priority", TASK_PRIORITIES),
+            type: optionalEnum(body.type, "type", TASK_TYPES),
+            section_id: body.section_id === undefined
+              ? undefined
+              : body.section_id === null
+                ? null
+                : requireText(body.section_id, "section_id", 200),
+            status: optionalEnum(body.status, "status", TASK_STATUSES),
+            position: optionalInt(body.position, "position", -100_000, 100_000),
+            story_points: optionalInt(body.story_points ?? body.storyPoints, "story_points", 0, 100),
+            tags: optionalTags(body.tags),
+            notes: optionalText(body.notes, "notes", 20_000),
+          },
+          db
+        );
         if (!updated) return errorResponse("Task not found", 404);
         return jsonResponse(updated);
       }
@@ -336,8 +510,7 @@ export async function handleApiRoute(
     // Start task
     const startMatch = pathParam(path, /^\/api\/tasks\/([^/]+)\/start$/);
     if (startMatch && method === "POST") {
-      const taskId = startMatch;
-      const started = startTask(taskId, db);
+      const started = startTask(startMatch, db);
       if (!started) return errorResponse("Task not found", 404);
       return jsonResponse(started);
     }
@@ -345,9 +518,12 @@ export async function handleApiRoute(
     // Complete task
     const completeMatch = pathParam(path, /^\/api\/tasks\/([^/]+)\/complete$/);
     if (completeMatch && method === "POST") {
-      const taskId = completeMatch;
-      const body = await parseJsonBody(req);
-      const completed = completeTask(taskId, body.notes, db);
+      const body = await readJsonBody(req);
+      const completed = completeTask(
+        completeMatch,
+        optionalText(body.notes, "notes", 20_000) ?? undefined,
+        db
+      );
       if (!completed) return errorResponse("Task not found", 404);
       return jsonResponse(completed);
     }
@@ -355,10 +531,16 @@ export async function handleApiRoute(
     // Status update convenience route
     const statusMatch = pathParam(path, /^\/api\/tasks\/([^/]+)\/status$/);
     if (statusMatch && method === "PATCH") {
-      const taskId = statusMatch;
-      const body = await parseJsonBody(req);
-      if (!body.status) return errorResponse("Status is required", 400);
-      const updated = updateTask(taskId, { status: body.status, notes: body.notes }, db);
+      const body = await readJsonBody(req);
+      const status = optionalEnum(body.status, "status", TASK_STATUSES) as TaskStatus | undefined;
+      if (!status) {
+        throw new HttpError(400, `"status" is required`);
+      }
+      const updated = updateTask(
+        statusMatch,
+        { status, notes: optionalText(body.notes, "notes", 20_000) ?? undefined },
+        db
+      );
       if (!updated) return errorResponse("Task not found", 404);
       return jsonResponse(updated);
     }
@@ -366,11 +548,10 @@ export async function handleApiRoute(
     // --- Archive ---
     const archiveMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/(?:archive|archive-done)$/);
     if (archiveMatch && method === "POST") {
-      const projectId = archiveMatch;
-      const body = await parseJsonBody(req);
-      const forceManual = body.forceManual !== undefined ? Boolean(body.forceManual) : true;
-      const thresholdHours = body.thresholdHours !== undefined ? Number(body.thresholdHours) : undefined;
-      const result = archiveDoneTasks(projectId, forceManual, thresholdHours, db);
+      const body = await readJsonBody(req);
+      const forceManual = body.forceManual === undefined ? true : Boolean(body.forceManual);
+      const thresholdHours = optionalInt(body.thresholdHours, "thresholdHours", 0, 8760);
+      const result = archiveDoneTasks(archiveMatch, forceManual, thresholdHours, db);
       return jsonResponse(result);
     }
 
@@ -379,8 +560,8 @@ export async function handleApiRoute(
     if (historyMatch && method === "GET") {
       const projectId = historyMatch;
       const query = url.searchParams.get("query") || url.searchParams.get("q") || undefined;
-      const page = parseInt(url.searchParams.get("page") || "1", 10);
-      const limit = parseInt(url.searchParams.get("limit") || "20", 10);
+      const page = intParam(url, "page", { min: 1, max: 10_000, fallback: 1 });
+      const limit = intParam(url, "limit", { min: 1, max: 200, fallback: 20 });
 
       if (query) {
         const items = searchHistory(projectId, query, limit, db);
@@ -393,25 +574,28 @@ export async function handleApiRoute(
         });
       }
 
-      const paginated = listHistory(projectId, page, limit, db);
-      return jsonResponse(paginated);
+      return jsonResponse(listHistory(projectId, page, limit, db));
     }
 
     // --- Metrics & Efficiency ---
     const metricsMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/(?:metrics|efficiency)$/);
     if (metricsMatch && method === "GET") {
       const projectId = metricsMatch;
-      const days = parseInt(url.searchParams.get("days") || "30", 10);
-      const metrics = calculateProjectMetrics(projectId, days, db);
-      return jsonResponse(metrics);
+      const days = intParam(url, "days", { min: 1, max: 3650, fallback: 30 });
+      return jsonResponse(calculateProjectMetrics(projectId, days, db));
     }
 
     return errorResponse(`Endpoint not found: ${method} ${path}`, 404);
-  } catch (err: any) {
-    console.error("API error:", err);
+  } catch (err) {
+    if (err instanceof HttpError) {
+      return errorResponse(err.message, err.status);
+    }
     if (err instanceof TaskValidationError) {
       return errorResponse(err.message, 422);
     }
-    return errorResponse(err?.message || "Internal server error", 500);
+
+    // Technical detail stays in the server log; the client gets a generic error.
+    console.error("API error:", err);
+    return errorResponse("Internal server error", 500);
   }
 }
