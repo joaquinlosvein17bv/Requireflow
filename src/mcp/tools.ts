@@ -4,7 +4,14 @@ import { z } from "zod";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 import { getDatabase } from "../db/connection.ts";
-import { resolveCurrentProject, getProject, listProjects, detectProject } from "../domain/project.ts";
+import {
+  resolveCurrentProject,
+  getProject,
+  getOrCreateProject,
+  createProject,
+  listProjects,
+  detectProject,
+} from "../domain/project.ts";
 import {
   createTask,
   listTasks,
@@ -20,11 +27,24 @@ import { archiveDoneTasks } from "../domain/archive.ts";
 import { searchHistory } from "../domain/history.ts";
 import { calculateProjectMetrics } from "../domain/efficiency.ts";
 
+/**
+ * Resolves the project a tool call targets.
+ *
+ * An explicitly supplied id must exist: silently falling back to the current
+ * directory made an agent write into a different project than the one it named
+ * (RF-02). Automatic resolution happens only when no id is supplied.
+ */
 function resolveProjectId(projectId?: string, db?: Database): string {
-  if (projectId) {
+  if (projectId !== undefined && projectId !== null && projectId.trim() !== "") {
     const existing = getProject(projectId, db);
-    if (existing) return existing.id;
+    if (!existing) {
+      throw new Error(
+        `Project not found with ID: ${projectId}. Run rf_project_list to list projects, or rf_project_detect to see which project owns the working directory.`
+      );
+    }
+    return existing.id;
   }
+
   const current = resolveCurrentProject(process.cwd(), db);
   return current.id;
 }
@@ -122,6 +142,44 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
     (name, description) =>
       server.tool(name, description, {}, () =>
         runTool("rf_project_list", () => listProjects(db))
+      )
+  );
+
+  // 1c. rf_project_add / project_create
+  registerDual(
+    "rf_project_add",
+    "project_create",
+    "Register a project explicitly. Returns the existing project when the root path is already registered.",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          name: z.string().min(1).describe("Display name for the project"),
+          rootPath: z
+            .string()
+            .optional()
+            .describe("Absolute repository root. Makes the registration idempotent."),
+          description: z.string().optional().describe("Optional project description"),
+          archiveThresholdHours: z
+            .number()
+            .optional()
+            .describe("Hours a completed task waits before automatic archival"),
+        },
+        (args) =>
+          runTool("rf_project_add", () => {
+            if (args.rootPath) {
+              return getOrCreateProject(args.name, args.rootPath, db);
+            }
+            return createProject(
+              {
+                name: args.name,
+                description: args.description,
+                archiveThresholdHours: args.archiveThresholdHours,
+              },
+              db
+            );
+          })
       )
   );
 

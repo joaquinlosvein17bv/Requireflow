@@ -50,10 +50,18 @@ describe("MCP Server & Tools", () => {
   });
 
   it("should execute task lifecycle via MCP tools", async () => {
-    // 1. Detect project
-    const detectRes = await tools["rf_project_detect"].handler({});
-    const project = JSON.parse(detectRes.content[0].text);
+    // 1. Register the project explicitly (detection is read-only)
+    const createRes = await tools["rf_project_add"].handler({
+      name: "mcp-lifecycle",
+      rootPath: "C:/repos/mcp-lifecycle",
+    });
+    const project = JSON.parse(createRes.content[0].text);
     expect(project.id).toBeDefined();
+
+    const detected = await tools["rf_project_detect"].handler({ cwd: "C:/repos/mcp-lifecycle/src" });
+    const detection = JSON.parse(detected.content[0].text);
+    expect(detection.id).toBe(project.id);
+    expect(detection.is_directory_linked).toBe(true);
 
     // 2. Add high priority bugfix and medium task
     const addRes1 = await tools["rf_task_add"].handler({
@@ -129,5 +137,50 @@ describe("MCP Server & Tools", () => {
     const errorRes = await tools["rf_task_start"].handler({ id: "invalid-id" });
     expect(errorRes.isError).toBe(true);
     expect(errorRes.content[0].text).toContain("Task not found");
+  });
+
+  it("fails instead of falling back when the project does not exist", async () => {
+    const missingId = "00000000-0000-0000-0000-000000000000";
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ["rf_task_add", { projectId: missingId, title: "ghost task" }],
+      ["rf_task_list", { projectId: missingId }],
+      ["rf_task_next", { projectId: missingId }],
+      ["rf_archive_run", { projectId: missingId }],
+      ["rf_history_search", { projectId: missingId, query: "anything" }],
+      ["rf_efficiency_stats", { projectId: missingId }],
+    ];
+
+    for (const [toolName, args] of calls) {
+      const res = await tools[toolName].handler(args);
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("Project not found");
+      expect(res.content[0].text).toContain(missingId);
+    }
+
+    const taskCount = db.query("SELECT COUNT(*) as c FROM tasks").get() as { c: number };
+    expect(taskCount.c).toBe(0);
+  });
+
+  it("creates a project explicitly and never duplicates it by root", async () => {
+    const created = await tools["rf_project_add"].handler({
+      name: "explicit-project",
+      rootPath: "C:/repos/explicit",
+    });
+    expect(created.isError).toBeUndefined();
+    const project = JSON.parse(created.content[0].text);
+    expect(project.name).toBe("explicit-project");
+    expect(project.root_path).toBe("C:/repos/explicit");
+
+    const again = await tools["rf_project_add"].handler({
+      name: "explicit-project",
+      rootPath: "C:/repos/explicit/",
+    });
+    const sameProject = JSON.parse(again.content[0].text);
+    expect(sameProject.id).toBe(project.id);
+
+    const all = db.query("SELECT COUNT(*) as c FROM projects WHERE name = 'explicit-project'").get() as {
+      c: number;
+    };
+    expect(all.c).toBe(1);
   });
 });
