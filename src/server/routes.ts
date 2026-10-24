@@ -59,6 +59,17 @@ async function parseJsonBody(req: Request): Promise<any> {
   }
 }
 
+/**
+ * Extracts the first capturing group of a path pattern.
+ * Returns null when the path does not match, keeping call sites free of
+ * undefined-able index access.
+ */
+function pathParam(path: string, pattern: RegExp): string | null {
+  const match = path.match(pattern);
+  const value = match?.[1];
+  return value === undefined || value.length === 0 ? null : value;
+}
+
 export async function handleApiRoute(
   req: Request,
   url: URL,
@@ -111,9 +122,9 @@ export async function handleApiRoute(
       }
     }
 
-    const projectMatch = path.match(/^\/api\/projects\/([^/]+)$/);
+    const projectMatch = pathParam(path, /^\/api\/projects\/([^/]+)$/);
     if (projectMatch) {
-      const projectId = projectMatch[1];
+      const projectId = projectMatch;
       if (method === "GET") {
         const project = getProject(projectId, db);
         if (!project) return errorResponse("Project not found", 404);
@@ -133,9 +144,9 @@ export async function handleApiRoute(
     }
 
     // --- Sections ---
-    const projectSectionsMatch = path.match(/^\/api\/projects\/([^/]+)\/sections$/);
+    const projectSectionsMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/sections$/);
     if (projectSectionsMatch) {
-      const projectId = projectSectionsMatch[1];
+      const projectId = projectSectionsMatch;
       if (method === "GET") {
         const sections = listSections(projectId, db);
         return jsonResponse(sections);
@@ -158,9 +169,9 @@ export async function handleApiRoute(
       }
     }
 
-    const sectionMatch = path.match(/^\/api\/sections\/([^/]+)$/);
+    const sectionMatch = pathParam(path, /^\/api\/sections\/([^/]+)$/);
     if (sectionMatch) {
-      const sectionId = sectionMatch[1];
+      const sectionId = sectionMatch;
       if (method === "PATCH") {
         const body = await parseJsonBody(req);
         const updated = updateSection(sectionId, body, db);
@@ -175,26 +186,26 @@ export async function handleApiRoute(
     }
 
     // --- Kanban Board & Backlog ---
-    const boardMatch = path.match(/^\/api\/projects\/([^/]+)\/board$/);
+    const boardMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/board$/);
     if (boardMatch && method === "GET") {
-      const projectId = boardMatch[1];
+      const projectId = boardMatch;
       const sectionId = url.searchParams.get("sectionId") || undefined;
       const board = getKanbanBoard(projectId, sectionId, db);
       return jsonResponse(board);
     }
 
-    const backlogMatch = path.match(/^\/api\/projects\/([^/]+)\/backlog$/);
+    const backlogMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/backlog$/);
     if (backlogMatch && method === "GET") {
-      const projectId = backlogMatch[1];
+      const projectId = backlogMatch;
       const sectionId = url.searchParams.get("sectionId") || undefined;
       const tasks = listTasks(projectId, { status: ["backlog", "todo"], sectionId }, db);
       return jsonResponse(tasks);
     }
 
     // --- Project Tasks ---
-    const projectTasksMatch = path.match(/^\/api\/projects\/([^/]+)\/tasks$/);
+    const projectTasksMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/tasks$/);
     if (projectTasksMatch) {
-      const projectId = projectTasksMatch[1];
+      const projectId = projectTasksMatch;
       if (method === "GET") {
         const status = url.searchParams.get("status") as TaskStatus | null;
         const sectionId = url.searchParams.get("sectionId") || undefined;
@@ -239,9 +250,9 @@ export async function handleApiRoute(
     }
 
     // --- Individual Tasks ---
-    const taskMatch = path.match(/^\/api\/tasks\/([^/]+)$/);
+    const taskMatch = pathParam(path, /^\/api\/tasks\/([^/]+)$/);
     if (taskMatch) {
-      const taskId = taskMatch[1];
+      const taskId = taskMatch;
       if (method === "GET") {
         const task = getTask(taskId, db);
         if (!task) return errorResponse("Task not found", 404);
@@ -261,18 +272,18 @@ export async function handleApiRoute(
     }
 
     // Start task
-    const startMatch = path.match(/^\/api\/tasks\/([^/]+)\/start$/);
+    const startMatch = pathParam(path, /^\/api\/tasks\/([^/]+)\/start$/);
     if (startMatch && method === "POST") {
-      const taskId = startMatch[1];
+      const taskId = startMatch;
       const started = startTask(taskId, db);
       if (!started) return errorResponse("Task not found", 404);
       return jsonResponse(started);
     }
 
     // Complete task
-    const completeMatch = path.match(/^\/api\/tasks\/([^/]+)\/complete$/);
+    const completeMatch = pathParam(path, /^\/api\/tasks\/([^/]+)\/complete$/);
     if (completeMatch && method === "POST") {
-      const taskId = completeMatch[1];
+      const taskId = completeMatch;
       const body = await parseJsonBody(req);
       const completed = completeTask(taskId, body.notes, db);
       if (!completed) return errorResponse("Task not found", 404);
@@ -280,9 +291,9 @@ export async function handleApiRoute(
     }
 
     // Status update convenience route
-    const statusMatch = path.match(/^\/api\/tasks\/([^/]+)\/status$/);
+    const statusMatch = pathParam(path, /^\/api\/tasks\/([^/]+)\/status$/);
     if (statusMatch && method === "PATCH") {
-      const taskId = statusMatch[1];
+      const taskId = statusMatch;
       const body = await parseJsonBody(req);
       if (!body.status) return errorResponse("Status is required", 400);
       const updated = updateTask(taskId, { status: body.status, notes: body.notes }, db);
@@ -291,9 +302,9 @@ export async function handleApiRoute(
     }
 
     // --- Archive ---
-    const archiveMatch = path.match(/^\/api\/projects\/([^/]+)\/(?:archive|archive-done)$/);
+    const archiveMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/(?:archive|archive-done)$/);
     if (archiveMatch && method === "POST") {
-      const projectId = archiveMatch[1];
+      const projectId = archiveMatch;
       const body = await parseJsonBody(req);
       const forceManual = body.forceManual !== undefined ? Boolean(body.forceManual) : true;
       const thresholdHours = body.thresholdHours !== undefined ? Number(body.thresholdHours) : undefined;
@@ -302,9 +313,9 @@ export async function handleApiRoute(
     }
 
     // --- History & Changelog ---
-    const historyMatch = path.match(/^\/api\/projects\/([^/]+)\/history$/);
+    const historyMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/history$/);
     if (historyMatch && method === "GET") {
-      const projectId = historyMatch[1];
+      const projectId = historyMatch;
       const query = url.searchParams.get("query") || url.searchParams.get("q") || undefined;
       const page = parseInt(url.searchParams.get("page") || "1", 10);
       const limit = parseInt(url.searchParams.get("limit") || "20", 10);
@@ -325,9 +336,9 @@ export async function handleApiRoute(
     }
 
     // --- Metrics & Efficiency ---
-    const metricsMatch = path.match(/^\/api\/projects\/([^/]+)\/(?:metrics|efficiency)$/);
+    const metricsMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/(?:metrics|efficiency)$/);
     if (metricsMatch && method === "GET") {
-      const projectId = metricsMatch[1];
+      const projectId = metricsMatch;
       const days = parseInt(url.searchParams.get("days") || "30", 10);
       const metrics = calculateProjectMetrics(projectId, days, db);
       return jsonResponse(metrics);

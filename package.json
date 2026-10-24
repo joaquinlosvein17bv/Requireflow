@@ -9,6 +9,7 @@
   "scripts": {
     "start": "bun run src/cli/index.ts",
     "test": "bun test",
+    "typecheck": "tsc --noEmit",
     "build": "bun build --compile --minify --sourcemap ./bin/requireflow.ts --outfile dist/requireflow",
     "ui:dev": "bun run src/server/http.ts"
   },

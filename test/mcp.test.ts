@@ -72,7 +72,7 @@ describe("MCP Server & Tools", () => {
       type: "feature",
       priority: "medium",
     });
-    const task2 = JSON.parse(addRes2.content[0].text);
+    expect(addRes2.isError).toBeUndefined();
 
     // 3. Next task should be the high priority bugfix
     const nextRes = await tools["rf_task_next"].handler({ projectId: project.id });

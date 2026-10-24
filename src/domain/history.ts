@@ -53,7 +53,7 @@ export function searchHistory(
       return listHistory(projectId, 1, limit, db).items;
     }
 
-    const conditions: string[] = ["h.id = fts.id"];
+    const conditions: string[] = [];
     const params: any[] = [ftsTerm];
 
     if (projectId) {
@@ -62,13 +62,16 @@ export function searchHistory(
     }
     params.push(limit);
 
+    const extraConditions =
+      conditions.length > 0 ? ` AND ${conditions.join(" AND ")}` : "";
+
     const sql = `
       SELECT h.*, p.name as project_name, s.name as section_name, s.color as section_color
       FROM history h
       JOIN history_fts fts ON fts.id = h.id
       JOIN projects p ON h.project_id = p.id
       LEFT JOIN sections s ON h.section_id = s.id
-      WHERE history_fts MATCH ? AND ${conditions.slice(1).join(" AND " || "")}
+      WHERE history_fts MATCH ?${extraConditions}
       ORDER BY bm25(history_fts), h.archived_at DESC
       LIMIT ?
     `;

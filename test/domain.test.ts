@@ -1,27 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createDatabase } from "../src/db/connection.ts";
-import {
-  createProject,
-  resolveCurrentProject,
-  listProjects,
-} from "../src/domain/project.ts";
-import {
-  createSection,
-  listSections,
-} from "../src/domain/section.ts";
+import { createProject, resolveCurrentProject } from "../src/domain/project.ts";
+import { listSections } from "../src/domain/section.ts";
 import {
   createTask,
-  getTask,
   listTasks,
   getNextTask,
   startTask,
   completeTask,
-  updateTask,
 } from "../src/domain/task.ts";
 import { archiveDoneTasks } from "../src/domain/archive.ts";
 import { searchHistory, listHistory } from "../src/domain/history.ts";
 import { calculateProjectMetrics } from "../src/domain/efficiency.ts";
+import { requireAt } from "./helpers.ts";
 
 describe("Domain Services", () => {
   let db: Database;
@@ -61,15 +53,15 @@ describe("Domain Services", () => {
       const sections = listSections(project.id, db);
 
       createTask(
-        { projectId: project.id, title: "Low priority item", priority: "low", sectionId: sections[0].id },
+        { projectId: project.id, title: "Low priority item", priority: "low", sectionId: requireAt(sections, 0).id },
         db
       );
       createTask(
-        { projectId: project.id, title: "Blocker bug", priority: "blocker", type: "bugfix", sectionId: sections[3].id },
+        { projectId: project.id, title: "Blocker bug", priority: "blocker", type: "bugfix", sectionId: requireAt(sections, 3).id },
         db
       );
       createTask(
-        { projectId: project.id, title: "High priority feature", priority: "high", sectionId: sections[1].id },
+        { projectId: project.id, title: "High priority feature", priority: "high", sectionId: requireAt(sections, 1).id },
         db
       );
 
@@ -133,7 +125,7 @@ describe("Domain Services", () => {
       // Search via FTS
       const searchRes = searchHistory(project.id, "WAL", 10, db);
       expect(searchRes.length).toBe(1);
-      expect(searchRes[0].title).toBe("Optimize DB connection pool");
+      expect(requireAt(searchRes, 0).title).toBe("Optimize DB connection pool");
     });
 
     it("should automatically archive only tasks older than threshold", () => {
@@ -155,7 +147,7 @@ describe("Domain Services", () => {
 
       const doneRemaining = listTasks(project.id, { status: "done" }, db);
       expect(doneRemaining.length).toBe(1);
-      expect(doneRemaining[0].id).toBe(taskFresh.id);
+      expect(requireAt(doneRemaining, 0).id).toBe(taskFresh.id);
     });
   });
 

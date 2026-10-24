@@ -15,9 +15,9 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    }
-  }
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["src/**/*.ts", "bin/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
 }

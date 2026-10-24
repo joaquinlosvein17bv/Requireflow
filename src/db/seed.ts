@@ -1,7 +1,7 @@
 import { getDatabase } from "./connection.ts";
 import { createProject } from "../domain/project.ts";
 import { createSection, listSections } from "../domain/section.ts";
-import { createTask, startTask, completeTask } from "../domain/task.ts";
+import { createTask, startTask } from "../domain/task.ts";
 import { archiveDoneTasks } from "../domain/archive.ts";
 
 export function seedDemoData() {

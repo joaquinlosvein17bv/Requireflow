@@ -1,15 +1,13 @@
 import { Database } from "bun:sqlite";
 import { getDatabase } from "../db/connection.ts";
-import { resolveCurrentProject, getProject, listProjects } from "../domain/project.ts";
+import { resolveCurrentProject } from "../domain/project.ts";
 import { listSections } from "../domain/section.ts";
 import {
   createTask,
-  getTask,
   listTasks,
   getNextTask,
   startTask,
   completeTask,
-  updateTask,
   type TaskType,
   type TaskPriority,
 } from "../domain/task.ts";
@@ -31,26 +29,26 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
   const flags: Record<string, string | boolean> = {};
 
   let i = 0;
-  if (args.length > 0 && !args[0].startsWith("-")) {
-    command = args[0];
+  const first = args[0];
+  if (first !== undefined && !first.startsWith("-")) {
+    command = first;
     i = 1;
   }
 
   while (i < args.length) {
     const arg = args[i];
-    if (arg.startsWith("--")) {
-      const key = arg.slice(2);
-      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        flags[key] = args[i + 1];
-        i += 2;
-      } else {
-        flags[key] = true;
-        i += 1;
-      }
-    } else if (arg.startsWith("-")) {
-      const key = arg.slice(1);
-      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        flags[key] = args[i + 1];
+    if (arg === undefined) {
+      break;
+    }
+
+    const isLong = arg.startsWith("--");
+    const isShort = !isLong && arg.startsWith("-");
+
+    if (isLong || isShort) {
+      const key = isLong ? arg.slice(2) : arg.slice(1);
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        flags[key] = next;
         i += 2;
       } else {
         flags[key] = true;

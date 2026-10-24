@@ -30,7 +30,6 @@ export function seedDefaultSections(
     return listSections(projectId, db);
   }
 
-  const sections: Section[] = [];
   const stmt = db.prepare(
     `INSERT INTO sections (id, project_id, name, color, position)
      VALUES (?, ?, ?, ?, ?)`
