@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import crypto from "node:crypto";
 import { getDatabase } from "../db/connection.ts";
+import { nowIso } from "./time.ts";
 
 export interface Section {
   id: string;
@@ -30,15 +31,16 @@ export function seedDefaultSections(
     return listSections(projectId, db);
   }
 
-  const stmt = db.prepare(
-    `INSERT INTO sections (id, project_id, name, color, position)
-     VALUES (?, ?, ?, ?, ?)`
+  const insert = db.prepare(
+    `INSERT INTO sections (id, project_id, name, color, position, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
   );
 
+  const createdAt = nowIso();
   db.transaction(() => {
     for (const item of DEFAULT_SECTIONS) {
       const id = crypto.randomUUID();
-      stmt.run(id, projectId, item.name, item.color, item.position);
+      insert.run(id, projectId, item.name, item.color, item.position, createdAt);
     }
   })();
 
@@ -65,9 +67,9 @@ export function createSection(
   }
 
   db.run(
-    `INSERT INTO sections (id, project_id, name, color, position)
-     VALUES (?, ?, ?, ?, ?)`,
-    [id, data.projectId, data.name, data.color || "#6366f1", pos]
+    `INSERT INTO sections (id, project_id, name, color, position, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, data.projectId, data.name, data.color || "#6366f1", pos, nowIso()]
   );
 
   return db.query("SELECT * FROM sections WHERE id = ?").get(id) as Section;

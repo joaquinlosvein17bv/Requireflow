@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { getDatabase } from "../db/connection.ts";
 import { seedDefaultSections } from "./section.ts";
 import { normalizeRootPath, isInsideRoot } from "./root-path.ts";
+import { nowIso } from "./time.ts";
 
 export { normalizeRootPath } from "./root-path.ts";
 
@@ -176,17 +177,18 @@ export function getOrCreateProject(
     }
 
     db.run(
-      "UPDATE projects SET root_path = ?, root_key = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [rootPath ?? null, rootKey, candidate.id]
+      "UPDATE projects SET root_path = ?, root_key = ?, updated_at = ? WHERE id = ?",
+      [rootPath ?? null, rootKey, nowIso(), candidate.id]
     );
     return db.query("SELECT * FROM projects WHERE id = ?").get(candidate.id) as Project;
   }
 
   const id = crypto.randomUUID();
+  const timestamp = nowIso();
   db.run(
-    `INSERT INTO projects (id, name, description, root_path, root_key, archive_threshold_hours)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, name, `Project for ${name}`, rootPath || null, rootKey, 24]
+    `INSERT INTO projects (id, name, description, root_path, root_key, archive_threshold_hours, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, name, `Project for ${name}`, rootPath || null, rootKey, 24, timestamp, timestamp]
   );
 
   seedDefaultSections(id, db);
@@ -206,10 +208,11 @@ export function createProject(
   const id = crypto.randomUUID();
   const rootPath = data.rootPath || null;
   const rootKey = rootPath ? normalizeRootPath(rootPath) : null;
+  const timestamp = nowIso();
 
   db.run(
-    `INSERT INTO projects (id, name, description, root_path, root_key, archive_threshold_hours)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO projects (id, name, description, root_path, root_key, archive_threshold_hours, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       data.name,
@@ -217,6 +220,8 @@ export function createProject(
       rootPath,
       rootKey,
       data.archiveThresholdHours ?? 24,
+      timestamp,
+      timestamp,
     ]
   );
 
@@ -291,7 +296,8 @@ export function updateProject(
     return getProject(id, db);
   }
 
-  fields.push("updated_at = CURRENT_TIMESTAMP");
+  fields.push("updated_at = ?");
+  values.push(nowIso());
   values.push(id);
 
   db.run(`UPDATE projects SET ${fields.join(", ")} WHERE id = ?`, values);

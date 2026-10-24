@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import crypto from "node:crypto";
 import { INITIAL_SCHEMA } from "./schema.ts";
 import { normalizeRootPath } from "../domain/root-path.ts";
 
@@ -64,6 +65,92 @@ function migrateProjectIdentity(db: Database): void {
   );
 }
 
+/**
+ * Canonicalizes every stored timestamp to ISO 8601 UTC and records one row per
+ * completed work cycle, so reopening a task appends a cycle instead of
+ * overwriting the previous duration (RF-09, RF-11).
+ */
+function migrateCanonicalTimeAndCycles(db: Database): void {
+  const tables: Array<{ table: string; columns: string[] }> = [
+    { table: "projects", columns: ["created_at", "updated_at"] },
+    { table: "sections", columns: ["created_at"] },
+    {
+      table: "tasks",
+      columns: ["created_at", "updated_at", "started_at", "completed_at", "archived_at"],
+    },
+    { table: "history", columns: ["started_at", "completed_at", "archived_at"] },
+  ];
+
+  for (const { table, columns } of tables) {
+    for (const column of columns) {
+      db.run(
+        `UPDATE ${table}
+            SET ${column} = strftime('%Y-%m-%dT%H:%M:%fZ', ${column})
+          WHERE ${column} IS NOT NULL
+            AND ${column} NOT LIKE '%T%'`
+      );
+    }
+  }
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS task_cycles (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT NOT NULL,
+      cycle_time_seconds INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+  `);
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_task_cycles_project_completed ON task_cycles(project_id, completed_at)"
+  );
+  db.run("CREATE INDEX IF NOT EXISTS idx_task_cycles_task ON task_cycles(task_id)");
+
+  // Backfill one cycle per already-completed task. Tasks that were never started
+  // get a zero-length cycle so their completion still counts for throughput and
+  // lead time without inflating average cycle time.
+  const completed = db
+    .query(
+      `SELECT t.id, t.project_id, t.started_at, t.completed_at, t.cycle_time_seconds
+         FROM tasks t
+        WHERE t.completed_at IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM task_cycles c WHERE c.task_id = t.id)`
+    )
+    .all() as Array<{
+    id: string;
+    project_id: string;
+    started_at: string | null;
+    completed_at: string;
+    cycle_time_seconds: number | null;
+  }>;
+
+  const insert = db.prepare(`
+    INSERT INTO task_cycles (id, task_id, project_id, started_at, completed_at, cycle_time_seconds, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const task of completed) {
+    const startedAt = task.started_at ?? task.completed_at;
+    const cycleSeconds =
+      task.cycle_time_seconds ??
+      Math.max(0, Math.round((Date.parse(task.completed_at) - Date.parse(startedAt)) / 1000));
+
+    insert.run(
+      crypto.randomUUID(),
+      task.id,
+      task.project_id,
+      startedAt,
+      task.completed_at,
+      cycleSeconds,
+      task.completed_at
+    );
+  }
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -74,6 +161,11 @@ export const MIGRATIONS: Migration[] = [
     version: 2,
     name: "project_identity_by_root_path",
     run: migrateProjectIdentity,
+  },
+  {
+    version: 3,
+    name: "canonical_time_and_task_cycles",
+    run: migrateCanonicalTimeAndCycles,
   },
 ];
 

@@ -617,6 +617,12 @@ const state = {
   function renderMetrics() {
     if (!state.metrics) return;
 
+    const windowDays = state.metrics.timeWindowDays ?? 30;
+    const timelineTitle = document.getElementById("velocityTimelineTitle");
+    if (timelineTitle) {
+      timelineTitle.textContent = `Tendencia de Entregas (Últimos ${windowDays} días)`;
+    }
+
     document.getElementById("kpiAvgCycle").textContent = state.metrics.formattedAvgCycleTime;
     document.getElementById("kpiAvgLead").textContent = state.metrics.formattedAvgLeadTime;
     document.getElementById("kpiBugfixVelocity").textContent = state.metrics.formattedBugfixVelocity;
@@ -661,7 +667,7 @@ const state = {
     if (timelineContainer) {
       timelineContainer.innerHTML = "";
       if (state.metrics.dailyTrends.length === 0) {
-        timelineContainer.innerHTML = '<div class="empty-state" style="padding: 10px;">Sin entregas en los últimos 7 días.</div>';
+        timelineContainer.innerHTML = '<div class="empty-state" style="padding: 10px;">Sin entregas en el período solicitado.</div>';
       } else {
         for (const item of state.metrics.dailyTrends) {
           const row = createEl("div", { class: "trend-day-row" }, [

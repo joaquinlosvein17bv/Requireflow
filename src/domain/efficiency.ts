@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { getDatabase } from "../db/connection.ts";
+import { isoDaysAgo, nowIso, startOfUtcDay } from "./time.ts";
 
 export interface EfficiencyMetrics {
   projectId: string;
@@ -27,6 +28,7 @@ export interface EfficiencyMetrics {
     date: string;
     completedCount: number;
   }>;
+  timeWindowDays: number;
 }
 
 export function formatDuration(seconds: number): string {
@@ -45,29 +47,65 @@ export function formatDuration(seconds: number): string {
   return parts.slice(0, 2).join(" ");
 }
 
+interface CycleRow {
+  task_id: string;
+  started_at: string;
+  completed_at: string;
+  cycle_time_seconds: number;
+  type: string;
+  task_created_at: string;
+}
+
+/** Daily series for the requested window, including days without completions. */
+function buildDailyTrends(cycles: CycleRow[], days: number, now: Date): Array<{ date: string; completedCount: number }> {
+  const counts = new Map<string, number>();
+  for (const cycle of cycles) {
+    const key = cycle.completed_at.slice(0, 10);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  const series: Array<{ date: string; completedCount: number }> = [];
+  const totalDays = Math.min(Math.max(Math.trunc(days), 1), 90);
+  for (let offset = totalDays - 1; offset >= 0; offset -= 1) {
+    const date = isoDaysAgo(offset, now).slice(0, 10);
+    series.push({ date, completedCount: counts.get(date) ?? 0 });
+  }
+  return series;
+}
+
+/**
+ * Metrics are computed from `task_cycles`, one row per completion, so reopening
+ * a task adds a cycle instead of overwriting the previous duration. All window
+ * bounds are ISO strings compared against ISO strings — never against SQLite's
+ * space-separated `datetime()`, whose `'T' > ' '` ordering used to include
+ * completions up to a day outside the requested window (RF-11, RF-22).
+ */
 export function calculateProjectMetrics(
   projectId: string,
   timeWindowDays: number = 30,
   db: Database = getDatabase()
 ): EfficiencyMetrics {
-  const completedTasks = db
+  const now = new Date();
+  const nowStamp = nowIso();
+  const windowStart = isoDaysAgo(timeWindowDays, now);
+  const todayStart = startOfUtcDay(now);
+  const weekStart = isoDaysAgo(7, now);
+
+  const cycles = db
     .query(`
-      SELECT 
-        id, type, created_at, started_at, completed_at, cycle_time_seconds
-      FROM tasks
-      WHERE project_id = ? 
-        AND status IN ('done', 'archived')
-        AND completed_at IS NOT NULL
-        AND completed_at >= datetime('now', '-' || ? || ' days')
+      SELECT c.task_id,
+             c.started_at,
+             c.completed_at,
+             c.cycle_time_seconds,
+             t.type,
+             t.created_at AS task_created_at
+        FROM task_cycles c
+        JOIN tasks t ON t.id = c.task_id
+       WHERE c.project_id = ?
+         AND c.completed_at >= ?
+         AND c.completed_at <= ?
     `)
-    .all(projectId, timeWindowDays) as Array<{
-      id: string;
-      type: string;
-      created_at: string;
-      started_at: string | null;
-      completed_at: string;
-      cycle_time_seconds: number | null;
-    }>;
+    .all(projectId, windowStart, nowStamp) as CycleRow[];
 
   const activeCountRow = db
     .query(`
@@ -78,12 +116,10 @@ export function calculateProjectMetrics(
     .get(projectId) as { count: number };
 
   const totalActive = Number(activeCountRow?.count || 0);
-  const totalCompleted = completedTasks.length;
+  const totalCompleted = cycles.length;
 
   let totalCycleSecs = 0;
-  let cycleCount = 0;
   let totalLeadSecs = 0;
-  let leadCount = 0;
   let totalBugfixCycleSecs = 0;
   let bugfixCount = 0;
 
@@ -95,87 +131,45 @@ export function calculateProjectMetrics(
     debt: 0,
   };
 
-  for (const t of completedTasks) {
-    const normType = t.type === "fix" ? "bugfix" : (t.type as keyof typeof distribution);
-    if (distribution[normType] !== undefined) {
-      distribution[normType]++;
+  for (const cycle of cycles) {
+    totalCycleSecs += cycle.cycle_time_seconds;
+
+    const normalizedType = cycle.type === "fix" ? "bugfix" : cycle.type;
+    if (normalizedType in distribution) {
+      distribution[normalizedType as keyof typeof distribution] += 1;
     } else {
-      distribution.feature++;
+      distribution.feature += 1;
     }
 
-    if (t.started_at && t.completed_at) {
-      const cycle = t.cycle_time_seconds ?? Math.max(0, Math.round(
-        (new Date(t.completed_at).getTime() - new Date(t.started_at).getTime()) / 1000
-      ));
-      totalCycleSecs += cycle;
-      cycleCount++;
-
-      if (t.type === "fix" || t.type === "bugfix") {
-        totalBugfixCycleSecs += cycle;
-        bugfixCount++;
-      }
+    if (cycle.type === "fix" || cycle.type === "bugfix") {
+      totalBugfixCycleSecs += cycle.cycle_time_seconds;
+      bugfixCount += 1;
     }
 
-    if (t.created_at && t.completed_at) {
-      const lead = Math.max(0, Math.round(
-        (new Date(t.completed_at).getTime() - new Date(t.created_at).getTime()) / 1000
-      ));
-      totalLeadSecs += lead;
-      leadCount++;
+    const leadMs = Date.parse(cycle.completed_at) - Date.parse(cycle.task_created_at);
+    if (Number.isFinite(leadMs)) {
+      totalLeadSecs += Math.round(leadMs / 1000);
     }
   }
 
-  const avgCycleTimeSeconds = cycleCount > 0 ? Math.round(totalCycleSecs / cycleCount) : 0;
-  const avgLeadTimeSeconds = leadCount > 0 ? Math.round(totalLeadSecs / leadCount) : 0;
+  const avgCycleTimeSeconds = totalCompleted > 0 ? Math.round(totalCycleSecs / totalCompleted) : 0;
+  const avgLeadTimeSeconds = totalCompleted > 0 ? Math.round(totalLeadSecs / totalCompleted) : 0;
   const bugfixVelocitySeconds = bugfixCount > 0 ? Math.round(totalBugfixCycleSecs / bugfixCount) : 0;
 
-  const todayCountRow = db
-    .query(`
-      SELECT COUNT(*) as count 
-      FROM tasks 
-      WHERE project_id = ? 
-        AND status IN ('done', 'archived')
-        AND completed_at >= date('now', 'start of day')
-    `)
+  const countSince = (boundary: string): number => {
+    const row = db
+      .query(
+        `SELECT COUNT(*) as count
+           FROM task_cycles
+          WHERE project_id = ? AND completed_at >= ? AND completed_at <= ?`
+      )
+      .get(projectId, boundary, nowStamp) as { count: number };
+    return Number(row?.count || 0);
+  };
+
+  const allTimeRow = db
+    .query("SELECT COUNT(*) as count FROM task_cycles WHERE project_id = ?")
     .get(projectId) as { count: number };
-
-  const weekCountRow = db
-    .query(`
-      SELECT COUNT(*) as count 
-      FROM tasks 
-      WHERE project_id = ? 
-        AND status IN ('done', 'archived')
-        AND completed_at >= date('now', '-7 days')
-    `)
-    .get(projectId) as { count: number };
-
-  const allTimeCountRow = db
-    .query(`
-      SELECT COUNT(*) as count 
-      FROM tasks 
-      WHERE project_id = ? AND status IN ('done', 'archived')
-    `)
-    .get(projectId) as { count: number };
-
-  // Daily trends for the last 7 days
-  const trendsRows = db
-    .query(`
-      SELECT 
-        date(completed_at) as comp_date,
-        COUNT(*) as count
-      FROM tasks
-      WHERE project_id = ? 
-        AND status IN ('done', 'archived')
-        AND completed_at >= date('now', '-7 days')
-      GROUP BY comp_date
-      ORDER BY comp_date ASC
-    `)
-    .all(projectId) as Array<{ comp_date: string; count: number }>;
-
-  const dailyTrends = trendsRows.map((r) => ({
-    date: r.comp_date,
-    completedCount: Number(r.count),
-  }));
 
   return {
     projectId,
@@ -189,10 +183,11 @@ export function calculateProjectMetrics(
     formattedBugfixVelocity: formatDuration(bugfixVelocitySeconds),
     distribution,
     throughput: {
-      today: Number(todayCountRow?.count || 0),
-      thisWeek: Number(weekCountRow?.count || 0),
-      allTime: Number(allTimeCountRow?.count || 0),
+      today: countSince(todayStart),
+      thisWeek: countSince(weekStart),
+      allTime: Number(allTimeRow?.count || 0),
     },
-    dailyTrends,
+    dailyTrends: buildDailyTrends(cycles, timeWindowDays, now),
+    timeWindowDays,
   };
 }

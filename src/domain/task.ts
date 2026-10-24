@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import crypto from "node:crypto";
 import { getDatabase } from "../db/connection.ts";
 import { getSection } from "./section.ts";
+import { nowIso, secondsBetween } from "./time.ts";
 
 export type TaskType = "feature" | "fix" | "bugfix" | "chore" | "refactor" | "debt";
 export type TaskPriority = "low" | "medium" | "high" | "blocker";
@@ -96,6 +97,7 @@ export function createTask(
   const priority = data.priority || "medium";
   const status = data.status || "todo";
   const tagsStr = Array.isArray(data.tags) ? data.tags.join(",") : data.tags || null;
+  const timestamp = nowIso();
 
   let pos = data.position;
   if (pos === undefined) {
@@ -110,8 +112,8 @@ export function createTask(
   db.run(
     `INSERT INTO tasks (
       id, project_id, section_id, title, description, type, priority,
-      status, position, story_points, tags, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      status, position, story_points, tags, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       data.projectId,
@@ -125,6 +127,8 @@ export function createTask(
       data.storyPoints ?? null,
       tagsStr,
       data.notes || null,
+      timestamp,
+      timestamp,
     ]
   );
 
@@ -234,6 +238,26 @@ export function getNextTask(
   return db.query(query).get(...params) as Task | null;
 }
 
+/**
+ * Records one completed work cycle. Cycles are the single source of truth for
+ * duration metrics: reopening a task appends a new cycle instead of
+ * overwriting the previous duration (RF-09).
+ */
+export function recordCycle(
+  taskId: string,
+  projectId: string,
+  startedAt: string,
+  completedAt: string,
+  cycleSeconds: number,
+  db: Database = getDatabase()
+): void {
+  db.run(
+    `INSERT INTO task_cycles (id, task_id, project_id, started_at, completed_at, cycle_time_seconds, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [crypto.randomUUID(), taskId, projectId, startedAt, completedAt, cycleSeconds, completedAt]
+  );
+}
+
 export function startTask(
   taskId: string,
   db: Database = getDatabase()
@@ -241,16 +265,16 @@ export function startTask(
   const current = getTask(taskId, db);
   if (!current) return null;
 
-  const nowStr = new Date().toISOString();
+  const nowStr = nowIso();
   const startedAt = current.started_at || nowStr;
 
   db.run(
     `UPDATE tasks 
      SET status = 'in_progress', 
          started_at = ?,
-         updated_at = CURRENT_TIMESTAMP
+         updated_at = ?
      WHERE id = ?`,
-    [startedAt, taskId]
+    [startedAt, nowStr, taskId]
   );
 
   return getTask(taskId, db);
@@ -264,27 +288,38 @@ export function completeTask(
   const current = getTask(taskId, db);
   if (!current) return null;
 
-  const now = new Date();
-  const completedAt = now.toISOString();
+  const completedAt = nowIso();
 
   let cycleTimeSeconds: number | null = current.cycle_time_seconds;
   if (current.started_at) {
-    const started = new Date(current.started_at);
-    cycleTimeSeconds = Math.max(0, Math.round((now.getTime() - started.getTime()) / 1000));
+    cycleTimeSeconds = secondsBetween(current.started_at, completedAt);
   }
 
   const updatedNotes = notes !== undefined ? notes : current.notes;
 
-  db.run(
-    `UPDATE tasks 
-     SET status = 'done', 
-         completed_at = ?,
-         cycle_time_seconds = ?,
-         notes = ?,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = ?`,
-    [completedAt, cycleTimeSeconds, updatedNotes, taskId]
-  );
+  db.transaction(() => {
+    db.run(
+      `UPDATE tasks 
+       SET status = 'done', 
+           completed_at = ?,
+           cycle_time_seconds = ?,
+           notes = ?,
+           updated_at = ?
+       WHERE id = ?`,
+      [completedAt, cycleTimeSeconds, updatedNotes, completedAt, taskId]
+    );
+
+    if (current.status !== "done") {
+      recordCycle(
+        taskId,
+        current.project_id,
+        current.started_at ?? completedAt,
+        completedAt,
+        cycleTimeSeconds ?? 0,
+        db
+      );
+    }
+  })();
 
   return getTask(taskId, db);
 }
@@ -299,6 +334,9 @@ export function updateTask(
 
   const fields: string[] = [];
   const values: any[] = [];
+  let pendingCycle:
+    | { startedAt: string; completedAt: string; cycleSeconds: number; projectId: string }
+    | null = null;
 
   if (updates.title !== undefined) {
     fields.push("title = ?");
@@ -346,16 +384,23 @@ export function updateTask(
 
     if (updates.status === "in_progress" && !current.started_at) {
       fields.push("started_at = ?");
-      values.push(new Date().toISOString());
+      values.push(nowIso());
     } else if (updates.status === "done" && !current.completed_at) {
-      const now = new Date();
+      const completedAt = nowIso();
       fields.push("completed_at = ?");
-      values.push(now.toISOString());
-      if (current.started_at) {
-        const diffSecs = Math.max(0, Math.round((now.getTime() - new Date(current.started_at).getTime()) / 1000));
-        fields.push("cycle_time_seconds = ?");
-        values.push(diffSecs);
-      }
+      values.push(completedAt);
+
+      const cycleSeconds = current.started_at
+        ? secondsBetween(current.started_at, completedAt)
+        : 0;
+      fields.push("cycle_time_seconds = ?");
+      values.push(cycleSeconds);
+      pendingCycle = {
+        startedAt: current.started_at ?? completedAt,
+        completedAt,
+        cycleSeconds,
+        projectId: current.project_id,
+      };
     }
   }
 
@@ -363,10 +408,24 @@ export function updateTask(
     return current;
   }
 
-  fields.push("updated_at = CURRENT_TIMESTAMP");
+  fields.push("updated_at = ?");
+  values.push(nowIso());
   values.push(taskId);
 
-  db.run(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`, values);
+  db.transaction(() => {
+    db.run(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`, values);
+    if (pendingCycle) {
+      recordCycle(
+        taskId,
+        pendingCycle.projectId,
+        pendingCycle.startedAt,
+        pendingCycle.completedAt,
+        pendingCycle.cycleSeconds,
+        db
+      );
+    }
+  })();
+
   return getTask(taskId, db);
 }
 
