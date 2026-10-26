@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { Database } from "bun:sqlite";
-import { getDatabase } from "../db/connection.ts";
+import { getDatabase, resolveDbPath, LegacyDatabaseError } from "../db/connection.ts";
 import { startAutoArchive } from "../domain/archive.ts";
 import { handleApiRoute } from "./routes.ts";
 import {
@@ -202,9 +202,17 @@ export async function startHttpServer(options: HttpServerOptions = {}) {
   const db = options.db || getDatabase();
   startAutoArchive(db);
   console.log(`RequireFlow HTTP Server running at http://${server.hostname}:${server.port}`);
+  console.log(`Active database: ${resolveDbPath()}`);
   return server;
 }
 
 if (import.meta.main) {
-  startHttpServer();
+  startHttpServer().catch((err) => {
+    if (err instanceof LegacyDatabaseError) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
 }

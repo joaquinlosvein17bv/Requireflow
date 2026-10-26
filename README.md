@@ -51,7 +51,7 @@ Tanto si es una mejora minúscula de 5 minutos como si es una arquitectura grand
 
 ## 🧭 Características Principales
 
-1. **Local-First Zero Config**: Cero servidores externos. Opera sobre un archivo SQLite embebido en `~/.requireflow/requireflow.db` con modo WAL ultrarrápido.
+1. **Local-First Zero Config**: Cero servidores externos. Opera sobre un archivo SQLite embebido con modo WAL ultrarrápido. RequireFlow 2 usa `~/.requireflow/v2/requireflow.db`; la base histórica v1 nunca se migra ni se toca.
 2. **Protocolo MCP para Agentes de IA**: Expone 12 herramientas nativas sobre `stdio` (`rf_project_detect`, `rf_project_add`, `rf_task_add`, `rf_task_next`, `rf_task_start`, `rf_task_complete`, etc.) para que Cursor, Claude Code, Antigravity o Windsurf gestionen el backlog de forma autónoma.
 3. **Agrupación por Tema y Complejidad**:
    - **Secciones temáticas**: Frontend, Backend, UI, Database, Bugfixes (con colores personalizables).
@@ -90,6 +90,39 @@ Cada idea conserva el texto original literal, una procedencia (`user`, `derived`
 Antes de crear nada, RequireFlow distingue seis situaciones: proyecto vinculado, subcarpeta de un proyecto, repositorio Git anidado independiente, carpeta vacía, directorio con código sin registrar, y ubicación genérica (home, escritorio, raíz de disco, temp).
 
 `init` y `idea` se niegan a operar en una ubicación genérica. Un repositorio de dotfiles en el home ya no convierte a todo el home en un proyecto.
+
+---
+
+## 🆕 RequireFlow 2 — Product Backlog (fase 2)
+
+### Almacenamiento separado: la base v1 no se toca
+
+RequireFlow 2 **no migra** la base histórica `~/.requireflow/requireflow.db`. Arranca con una base nueva:
+
+```bash
+requireflow db
+# Active DB:      ~/.requireflow/v2/requireflow.db
+# Active schema:  v6
+# Legacy v1 DB:   ~/.requireflow/requireflow.db (schema v1, NOT migrated)
+```
+
+Si una ruta, variable de entorno o fallback apunta a una base v1, la aplicación **se niega a abrirla** con un mensaje accionable en lugar de migrarla en silencio.
+
+### Exportar el legado a Markdown (solo lectura)
+
+```bash
+requireflow legacy export
+# o desde un backup concreto:
+requireflow legacy export --source ~/.requireflow/backups/<archivo>.db --out legacy-export
+```
+
+Genera, desde un snapshot SQLite consistente (`VACUUM INTO`, seguro con WAL):
+
+- `legacy-export/requireflow-legacy-export.md` — índice + todos los proyectos.
+- `legacy-export/projects/*.md` — un archivo por proyecto.
+- `legacy-export/requireflow-legacy-export.json` — respaldo estructurado verificable.
+
+Incluye metadatos (fuente, fecha, versión de esquema detectada, conteos, método, hashes, integridad), marca los campos que no existían en v1 en lugar de inventarlos, y **verifica** que las filas escritas coinciden con el snapshot. No importa nada al backlog V2 ni modifica la base original.
 
 ---
 
@@ -284,7 +317,8 @@ Toda mutación exige `expectedVersion` en el cuerpo: una versión desactualizada
 
 | Variable | Valor por defecto | Descripción |
 | :--- | :--- | :--- |
-| `REQUIREFLOW_DB_PATH` | `~/.requireflow/requireflow.db` | Ubicación del archivo de base de datos SQLite |
+| `REQUIREFLOW_V2_DB_PATH` | `~/.requireflow/v2/requireflow.db` | Base de datos de RequireFlow 2 |
+| `REQUIREFLOW_DB_PATH` | — | Override explícito de la base activa. Si apunta a una base v1, RequireFlow 2 se niega a abrirla |
 | `REQUIREFLOW_PORT` | `4242` | Puerto del servidor web y API REST |
 | `REQUIREFLOW_HOST` | `127.0.0.1` | Host de enlace del servidor HTTP |
 | `REQUIREFLOW_UI_DIR` | auto | Directorio con `index.html` para servir un dashboard propio (el binario trae el suyo en `dist/ui`) |

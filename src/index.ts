@@ -10,6 +10,7 @@ export * from "./domain/efficiency.ts";
 export * from "./domain/changelog.ts";
 export * from "./domain/idempotency.ts";
 export * from "./domain/backlog/work-item.ts";
+export * from "./domain/legacy/export.ts";
 export * from "./mcp/server.ts";
 export * from "./mcp/tools.ts";
 export * from "./server/http.ts";

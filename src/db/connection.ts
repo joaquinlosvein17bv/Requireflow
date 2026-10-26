@@ -6,14 +6,56 @@ import { runMigrations } from "./migrations.ts";
 
 const databases = new Map<string, Database>();
 
+/** Highest schema version this build understands. */
+export const V2_SCHEMA_VERSION = 6;
+
+/** The historical, never-auto-migrated RequireFlow 1 database. */
+export function legacyDbPath(): string {
+  return path.join(os.homedir(), ".requireflow", "requireflow.db");
+}
+
+/** Default RequireFlow 2 database. Always a different file from the legacy one. */
+export function v2DbPath(): string {
+  return path.join(os.homedir(), ".requireflow", "v2", "requireflow.db");
+}
+
+/**
+ * Raised when a command would open a pre-V2 database.
+ *
+ * RequireFlow 2 never upgrades a user's live v1 file behind their back: that
+ * data is exported to Markdown instead, and the new application runs on a new,
+ * clearly identified database.
+ */
+export class LegacyDatabaseError extends Error {
+  readonly dbPath: string;
+  readonly detectedVersion: number;
+
+  constructor(dbPath: string, detectedVersion: number) {
+    super(
+      `Refusing to open "${dbPath}": detected schema version ${detectedVersion}, which is older than RequireFlow 2 (v${V2_SCHEMA_VERSION}). ` +
+        `RequireFlow 2 does not migrate a live legacy database automatically. ` +
+        `Export it first with: requireflow legacy export --source "${dbPath}" --out legacy-export. ` +
+        `The V2 database lives at "${v2DbPath()}" (override with REQUIREFLOW_V2_DB_PATH).`
+    );
+    this.name = "LegacyDatabaseError";
+    this.dbPath = dbPath;
+    this.detectedVersion = detectedVersion;
+  }
+}
+
 export function resolveDbPath(customPath?: string): string {
   if (customPath) {
     return customPath;
   }
+  if (process.env.REQUIREFLOW_V2_DB_PATH) {
+    return process.env.REQUIREFLOW_V2_DB_PATH;
+  }
+  // Kept for tests and scripts. It is validated below, so pointing it at a v1
+  // file fails loudly instead of silently writing into the old database.
   if (process.env.REQUIREFLOW_DB_PATH) {
     return process.env.REQUIREFLOW_DB_PATH;
   }
-  return path.join(os.homedir(), ".requireflow", "requireflow.db");
+  return v2DbPath();
 }
 
 export function ensureDbDirectory(dbPath: string): void {
@@ -26,9 +68,94 @@ export function ensureDbDirectory(dbPath: string): void {
   }
 }
 
+export interface DatabaseInspection {
+  path: string;
+  exists: boolean;
+  sizeBytes: number;
+  hasUserTables: boolean;
+  schemaVersion: number;
+  isLegacy: boolean;
+}
+
+/** Reads the on-disk schema without opening the database for writing. */
+export function inspectDatabase(dbPath: string): DatabaseInspection {
+  if (dbPath === ":memory:") {
+    return {
+      path: dbPath,
+      exists: false,
+      sizeBytes: 0,
+      hasUserTables: false,
+      schemaVersion: 0,
+      isLegacy: false,
+    };
+  }
+
+  const resolved = path.resolve(dbPath);
+  if (!fs.existsSync(resolved)) {
+    return {
+      path: resolved,
+      exists: false,
+      sizeBytes: 0,
+      hasUserTables: false,
+      schemaVersion: 0,
+      isLegacy: false,
+    };
+  }
+
+  const sizeBytes = fs.statSync(resolved).size;
+  if (sizeBytes === 0) {
+    return {
+      path: resolved,
+      exists: true,
+      sizeBytes,
+      hasUserTables: false,
+      schemaVersion: 0,
+      isLegacy: false,
+    };
+  }
+
+  const db = new Database(resolved, { readonly: true });
+  try {
+    db.run("PRAGMA busy_timeout = 5000");
+    const tables = db
+      .query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts_%'"
+      )
+      .all() as Array<{ name: string }>;
+
+    const hasUserTables = tables.some((table) => table.name !== "_schema_migrations");
+    let schemaVersion = 0;
+    if (tables.some((table) => table.name === "_schema_migrations")) {
+      const row = db
+        .query("SELECT COALESCE(MAX(version), 0) v FROM _schema_migrations")
+        .get() as { v: number } | null;
+      schemaVersion = Number(row?.v ?? 0);
+    }
+
+    return {
+      path: resolved,
+      exists: true,
+      sizeBytes,
+      hasUserTables,
+      schemaVersion,
+      isLegacy: hasUserTables && schemaVersion < V2_SCHEMA_VERSION,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+export function assertNotLegacyDatabase(dbPath: string): void {
+  const inspection = inspectDatabase(dbPath);
+  if (inspection.isLegacy) {
+    throw new LegacyDatabaseError(inspection.path, inspection.schemaVersion);
+  }
+}
+
 export function createDatabase(customPath?: string): Database {
   const dbPath = resolveDbPath(customPath);
   ensureDbDirectory(dbPath);
+  assertNotLegacyDatabase(dbPath);
 
   const db = new Database(dbPath, { create: true });
 

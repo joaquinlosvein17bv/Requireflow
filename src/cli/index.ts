@@ -1,5 +1,15 @@
 import { Database } from "bun:sqlite";
-import { getDatabase } from "../db/connection.ts";
+import path from "node:path";
+import {
+  getDatabase,
+  resolveDbPath,
+  inspectDatabase,
+  legacyDbPath,
+  v2DbPath,
+  V2_SCHEMA_VERSION,
+  LegacyDatabaseError,
+} from "../db/connection.ts";
+import { exportLegacyDatabase } from "../domain/legacy/export.ts";
 import {
   resolveCurrentProject,
   setProjectMode,
@@ -213,6 +223,86 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
         for (const story of tree.ungrouped) {
           console.log(`  ${story.code ?? "H???"} - ${story.title}`);
         }
+      }
+      console.log("");
+      break;
+    }
+
+    case "db": {
+      const activePath = resolveDbPath();
+      const inspection = inspectDatabase(activePath);
+      const legacy = legacyDbPath();
+      const legacyInspection = inspectDatabase(legacy);
+
+      console.log(`\n=== RequireFlow storage ===`);
+      console.log(`Active DB:      ${activePath}`);
+      console.log(
+        `Active schema:  ${inspection.exists ? `v${inspection.schemaVersion}` : `not created yet (will initialise to v${V2_SCHEMA_VERSION})`}`
+      );
+      console.log(`V2 default:     ${v2DbPath()}`);
+      console.log(
+        `Legacy v1 DB:   ${legacy} ${legacyInspection.exists ? `(schema v${legacyInspection.schemaVersion}, ${legacyInspection.sizeBytes} bytes, NOT migrated)` : "(not found)"}`
+      );
+
+      if (path.resolve(activePath) === path.resolve(legacy)) {
+        console.log("\nWARNING: the active database is the legacy v1 file.");
+      }
+
+      if (inspection.exists && !inspection.isLegacy) {
+        const db = getDatabase();
+        const counts = {
+          projects: Number((db.query("SELECT COUNT(*) c FROM projects").get() as { c: number }).c),
+          tasks: Number((db.query("SELECT COUNT(*) c FROM tasks").get() as { c: number }).c),
+          workItems: Number(
+            (db.query("SELECT COUNT(*) c FROM work_items").get() as { c: number }).c
+          ),
+          history: Number((db.query("SELECT COUNT(*) c FROM history").get() as { c: number }).c),
+        };
+        console.log(
+          `Contents:       ${counts.projects} projects · ${counts.tasks} tasks · ${counts.workItems} work items · ${counts.history} history rows`
+        );
+      }
+      console.log("");
+      break;
+    }
+
+    case "legacy": {
+      const subcommand = positionals[0];
+      if (subcommand !== "export") {
+        fail(
+          'Usage: requireflow legacy export [--source <db>] [--out <dir>] [--force] [--json]'
+        );
+        return;
+      }
+
+      const source = (flags["source"] as string | undefined) || legacyDbPath();
+      const outDir = (flags["out"] as string | undefined) || path.resolve("legacy-export");
+      const force = flagToBoolean(flags["force"], false);
+
+      const result = exportLegacyDatabase({ sourcePath: source, outDir, force });
+
+      if (flags["json"]) {
+        console.log(JSON.stringify(result, null, 2));
+        if (!result.verified) process.exitCode = 1;
+        break;
+      }
+
+      console.log(`\n=== Legacy export ===`);
+      console.log(`Source:        ${result.sourcePath}`);
+      console.log(`Schema:        v${result.schemaVersion} (RequireFlow 1)`);
+      console.log(`Index:         ${result.indexPath}`);
+      console.log(`Structured:    ${result.jsonPath}`);
+      console.log(`Per project:   ${result.projectFiles.length} file(s) in ${path.join(result.outDir, "projects")}`);
+      console.log(
+        `Counts:        ${result.counts.projects} projects · ${result.counts.sections} sections · ${result.counts.tasks} tasks · ${result.counts.history} history rows`
+      );
+      console.log(`Integrity:     ${result.integrity}`);
+      console.log(`Snapshot hash: ${result.snapshotSha256}`);
+      console.log(`Content hash:  ${result.contentSha256}`);
+      console.log(`Verified:      ${result.verified ? "yes (snapshot rows match the export)" : "NO"}`);
+      if (!result.verified) {
+        console.error("Export verification failed: the written files do not match the snapshot.");
+        process.exitCode = 1;
       }
       console.log("");
       break;
@@ -476,6 +566,8 @@ USAGE:
   requireflow <command> [arguments] [flags]
 
 COMMANDS:
+  db                    Show the active database, its schema and the legacy v1 file
+  legacy export         Archive a RequireFlow 1 database to Markdown (read-only)
   init [--mode <m>]    Link or initialize current directory as active project
   mode [legacy|product] Show or switch the project workflow mode
   status                Show active Kanban status (To Do, In Progress, Done)
@@ -505,6 +597,10 @@ FLAGS:
 
 if (import.meta.main) {
   runCli().catch((err) => {
+    if (err instanceof LegacyDatabaseError) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
     console.error("Fatal error:", err);
     process.exit(1);
   });

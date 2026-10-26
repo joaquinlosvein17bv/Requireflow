@@ -44,5 +44,7 @@ Thumbs.db
 .atl/
 # Local Pi agent runtime
 .pi/
+# Legacy archive exports contain personal project data: kept on disk, never in git
+legacy-export/
 # Browser automation artifacts
 .playwright-mcp/
