@@ -90,3 +90,28 @@ describe("Dashboard resolution and packaging (RF-21)", () => {
     }
   });
 });
+
+describe("Ideas view (fast capture)", () => {
+  const UI_DIR = path.resolve(import.meta.dir, "..", "src", "ui");
+
+  it("ships the ideas tab, the capture form and the project mode badge", () => {
+    const html = fs.readFileSync(path.join(UI_DIR, "index.html"), "utf8");
+
+    expect(html).toContain('data-tab="ideas"');
+    expect(html).toContain('id="viewIdeas"');
+    expect(html).toContain('id="formIdea"');
+    expect(html).toContain('id="ideaTextInput"');
+    expect(html).toContain('id="ideasList"');
+    expect(html).toContain('id="projectModeBadge"');
+  });
+
+  it("renders idea text through the safe DOM helper, never as markup", () => {
+    const source = fs.readFileSync(path.join(UI_DIR, "app.js"), "utf8");
+
+    expect(source).toContain("async function loadIdeas");
+    expect(source).toContain("function initIdeaCapture");
+    expect(source).toContain("text: idea.original_text");
+    expect(source).toContain("text: idea.title");
+    expect(source).not.toMatch(/innerHTML\s*=\s*[^;]*idea\./);
+  });
+});

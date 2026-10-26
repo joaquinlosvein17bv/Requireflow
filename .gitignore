@@ -42,5 +42,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 Thumbs.db
 # Local Pi runtime state
 .atl/
+# Local Pi agent runtime
+.pi/
 # Browser automation artifacts
 .playwright-mcp/

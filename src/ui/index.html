@@ -27,6 +27,7 @@
           <button id="btnNewProject" class="btn-icon" title="Nuevo Proyecto">+</button>
         </div>
         <div id="projectRootPath" class="project-meta-path">...</div>
+        <div id="projectModeBadge" class="project-mode-badge" title="Modo de proyecto">legacy</div>
       </div>
 
       <!-- Main Navigation -->
@@ -34,6 +35,10 @@
         <button class="nav-item active" data-tab="kanban">
           <span class="nav-icon">📋</span>
           <span class="nav-label">Tablero Kanban</span>
+        </button>
+        <button class="nav-item" data-tab="ideas">
+          <span class="nav-icon">💡</span>
+          <span class="nav-label">Ideas</span>
         </button>
         <button class="nav-item" data-tab="backlog">
           <span class="nav-icon">📝</span>
@@ -123,7 +128,27 @@
           </div>
         </section>
 
-        <!-- 2. Backlog View -->
+        <!-- 2. Ideas View -->
+        <section id="viewIdeas" class="view-panel">
+          <div class="ideas-container">
+            <form id="formIdea" class="idea-capture">
+              <label for="ideaTextInput" class="section-label">CAPTURA RÁPIDA</label>
+              <textarea id="ideaTextInput" class="form-textarea" rows="3"
+                placeholder="Anotá la idea tal como se te ocurrió. No se convierte en trabajo ejecutable."></textarea>
+              <div class="idea-capture-actions">
+                <span id="ideaCaptureHint" class="idea-capture-hint">Enter guarda · Shift+Enter agrega línea</span>
+                <button type="submit" class="btn-primary">Guardar idea</button>
+              </div>
+            </form>
+
+            <div class="ideas-list-header">
+              <h2 class="section-label">IDEAS CAPTURADAS (<span id="ideasCount">0</span>)</h2>
+            </div>
+            <div id="ideasList" class="ideas-list"></div>
+          </div>
+        </section>
+
+        <!-- 3. Backlog View -->
         <section id="viewBacklog" class="view-panel">
           <div class="backlog-container">
             <div class="backlog-toolbar">
@@ -136,7 +161,7 @@
           </div>
         </section>
 
-        <!-- 3. History View -->
+        <!-- 4. History View -->
         <section id="viewHistory" class="view-panel">
           <div class="history-container">
             <div class="history-toolbar">
@@ -170,7 +195,7 @@
           </div>
         </section>
 
-        <!-- 4. Efficiency & Metrics View -->
+        <!-- 5. Efficiency & Metrics View -->
         <section id="viewMetrics" class="view-panel">
           <div class="metrics-container">
             <!-- KPI Cards -->
@@ -215,7 +240,7 @@
           </div>
         </section>
 
-        <!-- 5. Projects Manager View -->
+        <!-- 6. Projects Manager View -->
         <section id="viewProjects" class="view-panel">
           <div class="projects-manager-container">
             <div class="projects-manager-header">

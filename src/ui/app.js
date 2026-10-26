@@ -8,6 +8,7 @@ const state = {
   activeTab: "kanban",
   activeSectionFilter: null,
   kanbanData: { todo: [], in_progress: [], done: [] },
+  ideas: { projectId: null, ideas: [], epics: [], stories: [], ungrouped: [] },
   backlogTasks: [],
   historyData: { items: [], total: 0, page: 1, limit: 20 },
   metrics: null,
@@ -190,6 +191,12 @@ const state = {
       select.appendChild(opt);
     }
 
+    const modeBadge = document.getElementById("projectModeBadge");
+    if (modeBadge && state.currentProject) {
+      modeBadge.textContent = state.currentProject.mode || "legacy";
+      modeBadge.classList.toggle("mode-product", state.currentProject.mode === "product");
+    }
+
     const pathEl = document.getElementById("projectRootPath");
     if (pathEl && state.currentProject) {
       pathEl.textContent = state.currentProject.root_path || "Sin ruta de repositorio";
@@ -272,6 +279,7 @@ const state = {
 
         const titles = {
           kanban: "Tablero Kanban",
+          ideas: "Ideas",
           backlog: "Backlog & Secciones",
           history: "Historial Permanente",
           metrics: "Eficiencia & Métricas",
@@ -302,6 +310,9 @@ const state = {
       case "kanban":
         await loadKanban();
         break;
+      case "ideas":
+        await loadIdeas();
+        break;
       case "backlog":
         await loadBacklog();
         break;
@@ -317,7 +328,91 @@ const state = {
     }
   }
 
-  // --- 1. Kanban Board ---
+  // --- 1b. Ideas (fast capture) ---
+  async function loadIdeas() {
+    if (!state.currentProject) return;
+    state.ideas = await fetchAPI(`/api/projects/${state.currentProject.id}/planning`);
+    renderIdeas();
+  }
+
+  function renderIdeas() {
+    const list = document.getElementById("ideasList");
+    const count = document.getElementById("ideasCount");
+    if (!list) return;
+
+    const ideas = state.ideas?.ideas ?? [];
+    if (count) count.textContent = ideas.length;
+
+    list.innerHTML = "";
+    if (ideas.length === 0) {
+      list.append(
+        createEl("div", {
+          class: "empty-state",
+          text: "Todavía no hay ideas. Anotá la primera arriba, sin convertirla en trabajo.",
+        })
+      );
+      return;
+    }
+
+    for (const idea of ideas) {
+      const card = createEl("article", { class: "idea-card", dataset: { id: idea.id } });
+      card.append(
+        createEl("div", { class: "idea-card-head" }, [
+          createEl("span", { class: "badge badge-idea-status", text: idea.status }),
+          createEl("span", { class: `badge badge-definition badge-definition-${idea.definition}`, text: idea.definition }),
+          createEl("span", { class: "idea-date", text: formatDate(idea.created_at) }),
+        ]),
+        createEl("h3", { class: "idea-title", text: idea.title }),
+        createEl("pre", { class: "idea-original", text: idea.original_text })
+      );
+      list.append(card);
+    }
+  }
+
+  function initIdeaCapture() {
+    const form = document.getElementById("formIdea");
+    const input = document.getElementById("ideaTextInput");
+    if (!form || !input) return;
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!state.currentProject) {
+        showToast("No hay proyecto activo.", "error");
+        return;
+      }
+
+      const text = input.value.trim();
+      if (text === "") {
+        showToast("Escribí la idea antes de guardarla.", "error");
+        return;
+      }
+
+      try {
+        const result = await fetchAPI(`/api/projects/${state.currentProject.id}/ideas`, {
+          method: "POST",
+          body: JSON.stringify({ text }),
+        });
+        input.value = "";
+        if (result.duplicate_of) {
+          showToast("Idea guardada. Ya existía una idea idéntica.", "error");
+        } else {
+          showToast("Idea guardada. No se creó trabajo ejecutable.", "success");
+        }
+        await loadIdeas();
+      } catch {
+        // fetchAPI already surfaced the error.
+      }
+    });
+  }
+
+  // --- 2. Kanban Board ---
   async function loadKanban() {
     if (!state.currentProject) return;
     const filterQuery = state.activeSectionFilter ? `?sectionId=${state.activeSectionFilter}` : "";
@@ -957,6 +1052,7 @@ const state = {
     initModals();
     initArchiveButton();
     initSearchInputs();
+    initIdeaCapture();
     initLiveTimers();
     await loadProjects();
   });

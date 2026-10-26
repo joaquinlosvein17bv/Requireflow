@@ -56,9 +56,40 @@ Tanto si es una mejora minúscula de 5 minutos como si es una arquitectura grand
 3. **Agrupación por Tema y Complejidad**:
    - **Secciones temáticas**: Frontend, Backend, UI, Database, Bugfixes (con colores personalizables).
    - **Estimación**: Story points y prioridades (`blocker`, `high`, `medium`, `low`).
-4. **Archivado Dual (Kanban Limpio)**: Resuelve el problema del "Done infinito". Las tareas completadas esperan el umbral configurado por proyecto (`archive_threshold_hours`, 24h por defecto) y después se archivan automáticamente al Historial Permanente con búsqueda FTS5. El archivado manual (`--force`) sigue disponible para limpiar el tablero al instante. El paso automático corre mientras haya un proceso vivo (`requireflow ui`, `requireflow mcp` o cualquier comando); si nada estuvo corriendo, se pone al día en el siguiente arranque.
+4. **Archivado Dual (Kanban Limpio)**: Resuelve el problema del "Done infinito". Las tareas completadas esperan el umbral configurado por proyecto (`archive_threshold_hours`, 24h por defecto) y después se archivan automáticamente al Historial Permanente con búsqueda FTS5. El archivado manual (`--force`) sigue disponible para limpiar el tablero al instante. El paso automático corre mientras haya un proceso vivo (`requireflow ui` o `requireflow mcp`); si nada estuvo corriendo, se pone al día en el siguiente arranque.
 5. **Dashboard Web Vanilla Embebido**: Interfaz HTML5/CSS3/JS servida con `Bun.serve()` sin webpack, sin react y con respuesta en `< 5ms`.
 6. **Métricas de Eficiencia**: Mide el Tiempo de Ciclo real (`started_at` a `completed_at`), Lead Time y velocidad de resolución de errores.
+
+---
+
+## 🆕 RequireFlow 2 — Product Backlog (fase 1)
+
+RequireFlow puede operar en dos modos, por proyecto:
+
+| Modo | Comportamiento |
+| :-- | :-- |
+| `legacy` (default) | El flujo actual de tareas, Kanban, métricas e historial, sin exigir grupos. |
+| `product` | Habilita el backlog de producto: ideas, épicas, historias y, en las siguientes fases, grupos de experiencia G## con aprobación humana. |
+
+La capa de planificación es **aditiva**: `tasks`, `task_cycles` y `history` conservan su significado exacto, y las métricas siguen calculándose como siempre.
+
+### Captura rápida de ideas
+
+Una idea se guarda como idea, **nunca** como tarea ejecutable:
+
+```bash
+requireflow mode product
+requireflow idea "Carrusel de cartas: se detiene al salir y permite volver con X"
+requireflow backlog
+```
+
+Cada idea conserva el texto original literal, una procedencia (`user`, `derived`, `agent`, `preexisting`), un estado de definición (`clear`, `partial`, `unspecified`, `deferred`, `delegated`) y una versión para control de concurrencia. Una captura repetida con la misma `operationKey` devuelve la idea existente en lugar de duplicarla.
+
+### Clasificación del directorio
+
+Antes de crear nada, RequireFlow distingue seis situaciones: proyecto vinculado, subcarpeta de un proyecto, repositorio Git anidado independiente, carpeta vacía, directorio con código sin registrar, y ubicación genérica (home, escritorio, raíz de disco, temp).
+
+`init` y `idea` se niegan a operar en una ubicación genérica. Un repositorio de dotfiles en el home ya no convierte a todo el home en un proyecto.
 
 ---
 
@@ -97,6 +128,11 @@ bun run build
 # dashboard a dist/ui, que es lo que resuelve el binario en cualquier cwd.
 ```
 
+> **La unidad distribuible es la pareja `requireflow` + `dist/ui`.** El binario solo no
+> arranca el dashboard: busca `ui/` junto al ejecutable, luego `REQUIREFLOW_UI_DIR`,
+> luego el layout de fuentes y por último `~/.requireflow/ui`. Si copiás únicamente el
+> ejecutable, `requireflow ui` falla con un error explícito que lista las rutas buscadas.
+
 ---
 
 ## 💻 Comandos CLI
@@ -104,6 +140,18 @@ bun run build
 ```bash
 # Inicializar o vincular el directorio actual como proyecto activo
 requireflow init
+requireflow init --mode product
+
+# Ver o cambiar el modo del proyecto
+requireflow mode
+requireflow mode product
+
+# Capturar una idea sin crear trabajo ejecutable
+requireflow idea "Soporte para compartir cartas por link"
+
+# Ver ideas, épicas e historias del proyecto
+requireflow backlog
+requireflow backlog --json
 
 # Ver el estado del tablero (Por Hacer, En Progreso, Completadas)
 requireflow status
@@ -188,6 +236,10 @@ Para conectar `requireflow` con Cursor, Claude Desktop, Antigravity, Cline o Win
 | `rf_archive_run` | `task_archive_done` | Archiva tareas completadas. Respeta el umbral salvo `forceManual: true`. |
 | `rf_history_search` | `history_list` | Búsqueda FTS5 (ranking BM25) en tareas pasadas y notas de solución. |
 | `rf_efficiency_stats`| `efficiency_stats` | Tiempo de ciclo, lead time, throughput y velocidad de bugfix para la ventana pedida. |
+| `rf_workspace_classify` | `workspace_classify` | Clasifica el directorio (vinculado, subcarpeta, repo anidado, vacío, sin registrar, genérico). **Solo lectura** |
+| `rf_project_set_mode` | `project_set_mode` | Cambia el proyecto entre `legacy` y `product` |
+| `rf_idea_capture` | `idea_capture` | Captura una idea en bruto; nunca crea una tarea ejecutable |
+| `rf_backlog_tree` | `backlog_tree` | Panorama de planificación: ideas, épicas con sus historias y huérfanas |
 
 > Todos los identificadores de proyecto deben existir. Si pasás un `projectId` inexistente la herramienta falla con un error explícito en lugar de escribir en otro proyecto.
 
@@ -212,6 +264,19 @@ curl -X POST http://127.0.0.1:4242/api/projects \
 ```
 
 El token no es autenticación de usuario: la frontera real sigue siendo el archivo SQLite local. Su objetivo es cerrar la superficie de ataque del navegador.
+
+### Endpoints de planificación (fase 1)
+
+| Método | Ruta | Propósito |
+| :-- | :-- | :-- |
+| `GET` | `/api/workspace/classify?cwd=` | Clasificación read-only del directorio |
+| `GET`/`PATCH` | `/api/projects/:id/mode` | Consultar o cambiar el modo |
+| `POST`/`GET` | `/api/projects/:id/ideas` | Capturar o listar ideas |
+| `GET` | `/api/projects/:id/planning` | Árbol de ideas, épicas e historias |
+| `GET` | `/api/projects/:id/changes` | Registro append-only de cambios |
+| `GET`/`PATCH`/`DELETE` | `/api/backlog/items/:id` | Leer, actualizar o descartar un ítem de planificación |
+
+Toda mutación exige `expectedVersion` en el cuerpo: una versión desactualizada responde `409` con el estado vigente, en lugar de sobrescribir en silencio.
 
 ---
 
