@@ -13,7 +13,7 @@ S3 (Visión 2) "extraer épicas e historias y agrupar automáticamente todas las
 
 S4 (Visión 3) Grupos futuros "como propuestas flexibles: orden y dependencias visibles, sin exigir refinamiento completo ni aprobación anticipada."
 
-S5 (Visión 4) Refinar solo el grupo próximo: "campos [NO ESPECIFICADO: ...], decisiones D###, 1–3 preguntas relevantes por ronda, respuestas y trazabilidad. No inventar reglas ni repetir preguntas contestadas."
+S5 (Visión 4, revisado en L10) Preguntar antes de guardar. "Si una decisión funcional relevante es ambigua, pregúntamela inmediatamente. Haz de una a tres preguntas relacionadas por ronda". "Solo cuando la unidad que deseas registrar esté suficientemente clara y yo haya indicado que quieres registrarla, persiste valores realmente confirmados en RequireFlow." "No persistir NO ESPECIFICADO, TODO, TBD, por definir ni valores por defecto supuestos como requisitos aprobados." "No repitas preguntas ya contestadas." "Una decisión sobre un incremento futuro puede esperar" sin inventar respuesta. Excepción intencional: "captura rápida... guarda inmediatamente solo mis palabras originales en la bandeja de ideas, sin preguntas, sin descomponerlas ni habilitarlas para ejecución." "No exijas resolver todo el producto para iniciar G01."
 
 S6 (Visión 5) "Autorizar explícitamente la revisión exacta del alcance del grupo; delegar implementación a Gentle AI/ODD; recibir evidencias y ponerlo en pendiente_revision_humana."
 
@@ -59,6 +59,8 @@ S26 (Pruebas mínimas) Los 12 escenarios numerados del encargo: legacy intacto; 
 
 S27 (Entrega) Implementar el código, no solo un plan. No alterar ni borrar datos históricos. Sin servidor externo obligatorio. Informe final con modificaciones, migraciones, contratos, dashboard, rutas de skills, pruebas reales, pendientes e instalación. Si falta trabajo: "deja lo hecho funcionando y verificado, explica lo pendiente y no declares finalizada la transformación."
 
+S28 (Almacenamiento V2 y export legacy, L10) "no quiero ejecutar v1→v6 ni v1→v9 sobre ~/.requireflow/requireflow.db para lanzar RequireFlow 2. No toques, actualices, limpies, comprimas ni reconcilies automáticamente mi base cotidiana antigua." "Quiero conservar el contenido legado en Markdown organizado y arrancar RequireFlow 2 con un almacenamiento nuevo, independiente y claramente configurado." Exportador: snapshot consistente desde el backup verificado o "genera una copia SQLite coherente y de solo lectura sin activar las migraciones del runtime"; recuerda que la base usa WAL, "copiar solo el archivo .db no basta". Incluye "nombre, descripción, ruta original, ID, secciones, tareas y sus IDs, descripciones, tipo, prioridad, estado, fechas, notas, etiquetas, histórico y cualquier otro dato disponible"; si un campo no existía en v1, "indica que no estaba registrado; NO lo inventes". Incluye metadatos y "Verifica que lo exportado coincide con las filas del snapshot". Conserva "el backup original y la base vieja intactos". La exportación "NO implica importar automáticamente ese contenido al nuevo backlog". "No permitas que una variable de entorno o un fallback apunten silenciosamente al archivo v1. Comprueba y muestra qué DB está activa."
+
 ## Tasks
 
 | ID | Specs | Route | Status | Commit |
@@ -73,6 +75,8 @@ S27 (Entrega) Implementar el código, no solo un plan. No alterar ni borrar dato
 | T8 | S24 | inline | pending | — |
 | T9 | S9, S23 | inline | pending | — |
 | T10 | S26, S27 | inline | pending | — |
+| T11 | S28 | inline | done | `1d88ab8` |
+| T12 | S5, S9 | inline | done | `0c52e74` |
 
 ## Log
 
@@ -113,3 +117,18 @@ L8 Contrato añadido en esta unidad (fase 1).
 - UI: pestaña **Ideas** con captura rápida (Enter guarda, Shift+Enter salto de línea), lista con estado y definición, y badge de modo del proyecto. Render vía `createEl`/texto, sin `innerHTML` con datos del usuario.
 
 L9 Pendiente (no declarado terminado). T3 agrupación automática G01..GN y vistas por épica/grupo; T4 decisiones `[NO ESPECIFICADO]` + Ready; T5 AC estables + revisiones; T6 aprobación humana de alcance, gate de `rf_task_next` y handoff ODD; T7 deuda legacy (`task_cycles` en cascada, snapshot de historial, archivado forzado por defecto, `resolveCurrentProject` todavía auto-crea para comandos legacy distintos de `init`/`idea`); T8 export Markdown; T9 `requireflow-protocol` v2 + registro de skills; T10 verificación final. La base viva del usuario **sigue en v1**: no se migró ni se modificó; la migración v1→v6 está ensayada sobre copia.
+
+L10 (corrección del usuario, fragmentos verbatim). "Ya NO quiero que la skill rellene RequireFlow con el literal [NO ESPECIFICADO], con campos inventados ni con historias parcialmente interpretadas." Flujo: "crea un borrador en la conversación, no en la base"; "pregúntamela inmediatamente"; "persiste valores realmente confirmados en RequireFlow"; "No persistir NO ESPECIFICADO, TODO, TBD, por definir ni valores por defecto supuestos como requisitos aprobados." "CAMBIO EXPLÍCITO RESPECTO AL PLAN ANTERIOR: no quiero ejecutar v1→v6 ni v1→v9 sobre ~/.requireflow/requireflow.db para lanzar RequireFlow 2." "Conserva el contenido legado en Markdown organizado y arranca RequireFlow 2 con un almacenamiento nuevo, independiente y claramente configurado." "No permitas que una variable de entorno o un fallback apunten silenciosamente al archivo v1." "No escribas una supuesta integración que solo genere un prompt para pegar manualmente en otro agente." Este cambio reescribe S5 y agrega S28; reabre T4/T6 y crea T11/T12.
+
+L11 Verificación de esta entrega (reproducida en este turno).
+- Baseline real: rama `feat/requireflow-2-product-backlog`, árbol limpio, `bun test` 167/0, typecheck 0.
+- Base v1 verificada en solo-lectura: migración 1 únicamente; 5 proyectos / 22 secciones / 52 tareas / 5 historial; `requireflow.db` 4096 bytes con WAL de 2.4 MB.
+- Export legacy ejecutado desde la base viva con `VACUUM INTO` en conexión read-only: `legacy-export/requireflow-legacy-export.md` (48415 bytes), `.json` (58463 bytes), 5 archivos por proyecto. Conteos 5/22/52/5, `integrity: ok`, snapshot sha256 `2d185b3f…`, content sha256 `75f28119…`, `verified: yes`.
+- Base v1 intacta después del export: mismo tamaño, mismo mtime (22/09/2026), schema v1, sin `task_cycles`.
+- V2: `~/.requireflow/v2/requireflow.db`, schema v6, 0 proyectos. `requireflow db` muestra la base activa y la legacy separadas.
+- Guard: apuntar `REQUIREFLOW_DB_PATH` a la v1 aborta con exit 1 y un mensaje accionable; verificado también con el binario compilado.
+- `bun test` → **179 pass / 0 fail**, 634 expects, 28 archivos. `bun run typecheck` → 0. `bun run build` → 0. Binario desde un cwd ajeno con DB propia: dashboard 200 con `viewIdeas`, `/api/health` 200, DB V2 creada en la ruta override.
+- Skills: `requireflow-protocol` v2.0.0 con guarda de modo producto; `product-backlog` v2.1.0 con "preguntar antes de guardar". Registro local `.atl/skill-registry.md` actualizado (archivo ignorado por política del repo, por lo tanto no versionado).
+- `legacy-export/` queda en disco y fuera de git (`.gitignore`) porque contiene datos personales de proyectos.
+
+L12 Pendiente tras esta entrega. T3 agrupación automática G01..GN y membresía versionada; T4 preguntas en vivo + validación de promoción (sin persistir marcadores); T5 AC estables y snapshots de alcance; T6 gates efectivos de autorización y elegibilidad compartidos por los cuatro transportes + lectura directa del grupo por ODD; T7 deuda legacy; T8 export Markdown de V2 con `--check`; T9 cierre de skills y UI completa; T10 suite end-to-end de los 17 escenarios. El ciclo «describe idea → pregunta → agrupa → aprueba G01 → ODD → revisa → acepta → G02» **todavía no es ejecutable de punta a punta**: hoy existen captura de ideas, clasificación, modos, aislamiento de almacenamiento y export legacy.
