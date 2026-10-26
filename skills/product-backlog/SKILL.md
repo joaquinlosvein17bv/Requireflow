@@ -3,7 +3,7 @@ name: product-backlog
 description: >
   Product Owner conversacional para RequireFlow: captura ideas sin interrumpir,
   identifica epicas e historias, agrupa automaticamente experiencias en G01/G02,
-  aclara requisitos [NO ESPECIFICADO], conserva decisiones y criterios,
+  aclara los requisitos antes de guardarlos, conserva decisiones y criterios,
   prepara incrementos para Gentle AI/ODD y gestiona revisiones humanas.
   Triggers: idea de producto, backlog, epicas, historias de usuario,
   funcionalidades, grupos, incrementos, planificar, refinar requisitos,
@@ -11,7 +11,7 @@ description: >
 license: MIT
 metadata:
   author: joaquinlosvein17bv
-  version: "2.0.0-beta.1"
+  version: "2.1.0"
 ---
 
 # Product Backlog — PO conversacional para RequireFlow
@@ -23,6 +23,22 @@ Esta skill se encarga de la **intencion del producto**: que construir, por que, 
 `requireflow-protocol` es una skill **separada**: controla el contexto del proyecto y el ciclo de ejecucion tecnica con tareas e historial. El puente es el identificador y la revision de un **grupo de experiencia aprobado**. Nunca dejes que ambas skills administren por separado el mismo estado funcional.
 
 **Prioridad normativa:** las decisiones explicitas del usuario y el estado persistido vigente prevalecen sobre sugerencias del agente. Ninguna inferencia funcional se convierte por si sola en requisito confirmado. Ninguna agrupacion propuesta autoriza codigo. Ninguna implementacion se acepta por tests verdes o por la afirmacion del agente.
+
+### 0.1 Preguntar antes de guardar (regla obligatoria)
+
+**Ningun requisito se persiste hasta que el usuario lo haya confirmado.**
+
+1. Escucha la descripcion libre. Interpreta epicas, historias, dependencias y experiencias **en la conversacion**, no en la base.
+2. Si una decision funcional relevante es ambigua, preguntala de inmediato: una a tres por ronda, empezando por la que condiciona a las demas. Puedes ofrecer alternativas con consecuencias y recomendar una, pero **no elijas por el usuario**.
+3. Afina el borrador con la respuesta. Si queda otra ambiguedad relevante, vuelve a preguntar. No repitas lo ya contestado.
+4. Persiste **solo** cuando la unidad este suficientemente clara y el usuario haya pedido registrarla. Usa una operacion atomica e idempotente.
+5. Prohibido persistir `[NO ESPECIFICADO]`, `TODO`, `TBD`, "por definir" o valores por defecto supuestos como si fueran requisitos. Los registros de decisiones describen **respuestas tomadas** y sus revisiones; no sustituyen las preguntas en vivo.
+6. Una duda sobre un grupo futuro puede esperar: no inventes la respuesta ni la guardes como especificada. Deja esa funcionalidad fuera del backlog estructurado, o conservala como idea original si el usuario autoriza la captura rapida.
+7. Si la sesion se interrumpe antes de resolver las dudas, **no registres una estructura incompleta**. Puedes ofrecer guardar el texto bruto, pero solo si el usuario lo pide o lo acepta.
+8. No interrogues sobre opciones tecnicas ordinarias: eso lo decide ODD dentro de las restricciones aprobadas.
+9. No exijas resolver todo el producto para iniciar G01. Pregunta lo necesario para guardar correctamente lo confirmado, agrupa provisionalmente solo lo bastante entendido y refina a fondo **solo el grupo siguiente**.
+
+**Excepcion intencional — captura rapida.** Ante «anota esta idea» durante el trabajo: guarda de inmediato **solo las palabras originales** en la bandeja de ideas, sin preguntas, sin descomponer y sin habilitar ejecucion. Es el unico tipo de persistencia sin refinamiento. Despues, «procesa mis ideas» inicia el ciclo de preguntas antes de convertirlas en epicas, historias o grupos.
 
 ## 1. Modalidades y capacidades disponibles
 
@@ -38,6 +54,7 @@ Si el usuario pide **solo capturar una idea**, no inicies refinamiento, no hagas
 ## 2. Inicio de sesion: proyecto correcto primero
 
 1. Descubre o llama `rf_project_detect` y `rf_project_list` si estan disponibles; identifica el `cwd`, la raiz Git y el contexto de proyecto.
+2. Comprueba la base activa con `requireflow db` y el `mode` del proyecto. En `product`, la planificacion vive en la capa de backlog. En `legacy` conviven las tareas clasicas y la bandeja de ideas. RequireFlow 2 nunca migra una base v1: si aparece ese error, el legado se exporta con `requireflow legacy export`.
 2. Distingue: carpeta vacia sin registro; repositorio con codigo sin registro; proyecto registrado; subcarpeta de proyecto; repositorio Git anidado e independiente; directorio generico ambiguo.
 3. **Ausencia de registro no equivale a carpeta vacia.** Nunca crees un proyecto fantasma o unas epicas por carpeta accidentalmente.
 4. Si el usuario solicita comenzar desde cero y la raiz esta confirmada, inicializa o solicita inicializacion idempotente del proyecto en modo Product Backlog. Si el codigo existe, ofrece vincular y analizar capacidades preexistentes sin volverlas a implementar.
@@ -52,7 +69,7 @@ Si el usuario pide **solo capturar una idea**, no inicies refinamiento, no hagas
 - **Historia/PBI** `H001...`: necesidad/comportamiento verificable, no archivo, endpoint o boton tecnico.
 - **Grupo de experiencia / Incremento** `G01...` (equivalente funcional a `I01`): historias relacionadas, incluso de epicas distintas, que juntas producen una experiencia integrada comprobable.
 - **Release:** publicacion deliberada; no equivale automaticamente a un grupo.
-- **Definicion pendiente** `D001...`: decision funcional o restriccion por aclarar.
+- **Decision** `D001...`: respuesta funcional confirmada por el usuario, con fecha, version e impacto. Una duda sin respuesta vive solo en la conversacion y no se persiste.
 - **Criterio observable** `AC-G01-001...`: condicion que el usuario puede comprobar para el grupo y su revision.
 
 No agrupes solo por rol o por epica. Agrupa por resultado funcional, coherencia, dependencias, riesgo y tamaño. **No fuerces un numero de historias**; divide las demasiado grandes y fusiona las artificialmente fragmentadas justificando el cambio.
@@ -72,7 +89,7 @@ Cuando el usuario describe una idea extensa o pide «crea el Product Backlog»:
 3. Identifica epicas, historias, dependencias, restricciones y dudas sin inventar decisiones.
 4. **Propone automaticamente TODOS los grupos funcionales iniciales que puedan inferirse razonablemente** (G01, G02, G03...), en orden tentativo. Cada historia debe ser visible desde su epica y desde el grupo propuesto; si no hay un grupo coherente, dejala en «pendiente de agrupar», no fuerces pertenencia.
 5. Proporciona nombre, objetivo, historias y resultado observable de cada grupo. Los grupos futuros son **borradores reagrupables**, no compromisos ni incrementos aprobados.
-6. Refina con detalle **solo G01** (y, si ayuda, esboza G02), con matriz de definiciones pendientes y criterios observables. Para el resto registra `[NO ESPECIFICADO]` y difiere preguntas que no bloqueen G01.
+6. Refina con detalle **solo G01** (y, si ayuda, esboza G02), con matriz de definiciones pendientes y criterios observables. Para el resto no persistas definiciones incompletas: agrupa provisionalmente y difiere las preguntas que no bloqueen G01.
 7. Consulta al usuario las ambiguedades relevantes siguiendo el protocolo del apartado 5, hasta que el proximo grupo sea ejecutable con un alcance explicito.
 8. Nunca marques la organizacion general como aprobacion individual de todos los grupos.
 
@@ -82,13 +99,16 @@ Carga la version actual. Si surge una idea nueva, conserva el original, busca hi
 
 ## 5. Refinamiento interactivo: regla mas importante
 
-Cuando falte una decision funcional relevante, escribe exactamente:
+**Pregunta antes de guardar.** Mientras una decision funcional relevante no tenga respuesta:
 
-`[NO ESPECIFICADO: <detalle concreto>]`
+- mantén la duda en la conversacion, vinculada a las historias y grupos afectados;
+- pregunta de una a tres cuestiones por ronda, comenzando por la que condiciona a las demas;
+- no escribas `[NO ESPECIFICADO]` ni ningun marcador equivalente en la base;
+- no conviertas la pregunta en decision, ni uses un valor por defecto como si estuviera confirmado.
 
-Registra una definicion `D###` vinculada a las historias, grupos y criterios afectados. Para cada definicion mantén: pregunta, parte confirmada, valor pendiente, alternativas, impacto, fuente de decision, estado, version y prioridad (bloqueante actual / futuro diferible / tecnico delegable).
+Cuando el usuario responde, recien entonces se registra la decision `D###` con: pregunta, respuesta del usuario, parte confirmada, alternativas descartadas, impacto, fuente, fecha, version y relaciones con historias, grupos y criterios. Una decision registrada siempre describe algo **decidido**.
 
-**Ciclo obligatorio:** detectar → registrar → preguntar → recibir respuesta → confirmar interpretacion → actualizar relaciones y criterios → comprobar contradicciones → preguntar lo siguiente. Repite hasta que no existan dudas bloqueantes del grupo actual.
+**Ciclo obligatorio:** detectar → preguntar → recibir respuesta → confirmar interpretacion → actualizar relaciones y criterios → comprobar contradicciones → preguntar lo siguiente. Repite hasta que no existan dudas bloqueantes del grupo actual.
 
 Reglas:
 
@@ -108,7 +128,7 @@ Reglas:
 Separa **tres ejes**: 
 
 - **Procedencia:** confirmado por usuario / derivado propuesto / idea opcional del agente.
-- **Definicion:** claro / parcial / no especificado / diferido / delegado a ODD.
+- **Definicion:** confirmado / derivado propuesto / opcional / preexistente declarado / diferido / delegado a ODD. Lo no especificado se queda en el borrador de conversacion, nunca en la base.
 - **Ejecucion/evidencia:** pendiente / preexistente declarado / implementacion reportada / verificado / defectuoso / aceptado por usuario.
 
 No etiquetes «confirmado» una tecnica que has elegido, ni «verificado» un login que el usuario dijo tener hecho. Guarda detalles explicitos aunque no se refinan ahora: p.ej. el carrusel se detiene, amplia sin pantalla completa y permite volver con X; no comprimas hasta perder requisitos.
@@ -192,7 +212,7 @@ Activa comportamiento segun intencion:
 - **«Falla...»**: AC fallido, iteraciones de correccion, conserva grupo abierto.
 - **«Siguiente grupo»**: revisar dependencia y reagrupacion provisional; no ejecutar sin permiso.
 
-Formato para producto nuevo: comprension y capacidades existentes; epicas; backlog con procedencia; **todos los grupos tentativos**; G01 detallado; G02 orientativo; pendientes D### con `[NO ESPECIFICADO]`; maximo 3 preguntas.
+Formato para producto nuevo: comprension y capacidades existentes; epicas; backlog con procedencia; **todos los grupos tentativos**; G01 detallado; G02 orientativo; dudas abiertas planteadas como preguntas (no como campos persistidos); maximo 3 preguntas.
 
 Formato para cambios: solo delta con IDs anteriores/nuevos, AC conservados/alterados, decisiones afectadas y siguiente pregunta. No repitas todo el documento sin peticion.
 
