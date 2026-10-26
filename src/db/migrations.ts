@@ -261,6 +261,97 @@ function migrateHistoryPreservation(db: Database): void {
   `);
 }
 
+/**
+ * Planning core for RequireFlow 2: project mode, the work-item lattice
+ * (idea/epic/story), the append-only change log and idempotency keys.
+ *
+ * Everything here is additive. `tasks`, `task_cycles` and `history` keep their
+ * exact meaning; the only touch is a nullable pointer from a task to the story
+ * that authorised it, so execution can be traced without reinterpreting status.
+ */
+function migratePlanningCore(db: Database): void {
+  if (!hasColumn(db, "projects", "mode")) {
+    // SQLite cannot add a CHECK constraint without rebuilding the table, so the
+    // value is constrained in the domain layer instead.
+    db.run("ALTER TABLE projects ADD COLUMN mode TEXT NOT NULL DEFAULT 'legacy'");
+  }
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS work_items (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('idea', 'epic', 'story')),
+      parent_id TEXT,
+      code TEXT,
+      title TEXT NOT NULL,
+      original_text TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'captured'
+        CHECK (status IN ('captured', 'draft', 'refined', 'ready', 'discarded')),
+      definition TEXT NOT NULL DEFAULT 'unspecified'
+        CHECK (definition IN ('clear', 'partial', 'unspecified', 'deferred', 'delegated')),
+      origin TEXT NOT NULL DEFAULT 'user'
+        CHECK (origin IN ('user', 'derived', 'agent', 'preexisting')),
+      priority TEXT NOT NULL DEFAULT 'medium'
+        CHECK (priority IN ('low', 'medium', 'high', 'blocker')),
+      position INTEGER NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      refined_at TEXT,
+      discarded_at TEXT,
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY(parent_id) REFERENCES work_items(id) ON DELETE RESTRICT
+    );
+  `);
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_work_items_project_kind ON work_items(project_id, kind, position)"
+  );
+  db.run("CREATE INDEX IF NOT EXISTS idx_work_items_parent ON work_items(parent_id)");
+  db.run(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_code ON work_items(project_id, code) WHERE code IS NOT NULL"
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS change_log (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      from_value TEXT,
+      to_value TEXT,
+      payload TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+  `);
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_change_log_project_created ON change_log(project_id, created_at)"
+  );
+  db.run("CREATE INDEX IF NOT EXISTS idx_change_log_entity ON change_log(entity_type, entity_id)");
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+      key TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+
+  if (!hasColumn(db, "tasks", "work_item_id")) {
+    db.run("ALTER TABLE tasks ADD COLUMN work_item_id TEXT REFERENCES work_items(id) ON DELETE RESTRICT");
+  }
+  if (!hasColumn(db, "tasks", "odd_task_ref")) {
+    db.run("ALTER TABLE tasks ADD COLUMN odd_task_ref TEXT");
+  }
+  db.run(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_odd_ref ON tasks(work_item_id, odd_task_ref) WHERE odd_task_ref IS NOT NULL"
+  );
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -286,6 +377,11 @@ export const MIGRATIONS: Migration[] = [
     version: 5,
     name: "history_preserved_after_task_delete",
     run: migrateHistoryPreservation,
+  },
+  {
+    version: 6,
+    name: "planning_core_and_project_mode",
+    run: migratePlanningCore,
   },
 ];
 
