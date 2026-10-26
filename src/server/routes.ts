@@ -9,6 +9,9 @@ import {
   updateProject,
   deleteProject,
   detectProject,
+  classifyWorkspace,
+  setProjectMode,
+  isProjectMode,
 } from "../domain/project.ts";
 import {
   listSections,
@@ -36,6 +39,22 @@ import {
 import { archiveDoneTasks } from "../domain/archive.ts";
 import { listHistory, searchHistory } from "../domain/history.ts";
 import { calculateProjectMetrics } from "../domain/efficiency.ts";
+import { listChanges } from "../domain/changelog.ts";
+import {
+  createIdea,
+  getBacklogTree,
+  getWorkItem,
+  updateWorkItem,
+  discardWorkItem,
+  WorkItemConflictError,
+  WorkItemValidationError,
+  WORK_ITEM_DEFINITIONS,
+  WORK_ITEM_PRIORITIES,
+  WORK_ITEM_STATUSES,
+  type WorkItemDefinition,
+  type WorkItemPriority,
+  type WorkItemStatus,
+} from "../domain/backlog/work-item.ts";
 
 /** An error whose message is safe to return to the client. */
 class HttpError extends Error {
@@ -59,6 +78,11 @@ export function jsonResponse(data: any, status: number = 200): Response {
 
 export function errorResponse(message: string, status: number = 400): Response {
   return jsonResponse({ error: message, status }, status);
+}
+
+/** A version conflict is not a client mistake: it carries the current state. */
+function conflictResponse(message: string, current: unknown): Response {
+  return jsonResponse({ error: message, status: 409, current }, 409);
 }
 
 async function readJsonBody(req: Request): Promise<Record<string, unknown>> {
@@ -236,6 +260,13 @@ function validateDirectory(input: string): DirectoryValidation {
   return { ok: true, path: resolved };
 }
 
+/** Actor attribution for local calls; never evidence of human presence. */
+function actorFromRequest(req: Request): string {
+  const header = req.headers.get("x-requireflow-actor");
+  if (header && header.trim() !== "") return header.trim();
+  return "user:local";
+}
+
 export async function handleApiRoute(
   req: Request,
   url: URL,
@@ -313,6 +344,84 @@ export async function handleApiRoute(
           detected_root: detection.rootPath,
         });
       }
+    }
+
+    // --- Workspace classification (read-only) ---
+    if (path === "/api/workspace/classify") {
+      if (method === "GET") {
+        const cwdParam = url.searchParams.get("cwd");
+        if (cwdParam !== null) {
+          const validation = validateDirectory(cwdParam);
+          if (!validation.ok) {
+            return errorResponse(validation.error, 400);
+          }
+        }
+        return jsonResponse(classifyWorkspace(cwdParam ?? process.cwd(), db));
+      }
+      return errorResponse("Method not allowed", 405);
+    }
+
+    // --- Project mode ---
+    const modeMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/mode$/);
+    if (modeMatch) {
+      if (method === "GET") {
+        const project = getProject(modeMatch, db);
+        if (!project) return errorResponse("Project not found", 404);
+        return jsonResponse({ projectId: modeMatch, mode: project.mode });
+      }
+      if (method === "PATCH") {
+        const body = await readJsonBody(req);
+        if (!isProjectMode(body.mode)) {
+          return errorResponse(`"mode" must be one of: legacy, product`, 422);
+        }
+        const updated = setProjectMode(modeMatch, body.mode, actorFromRequest(req), db);
+        if (!updated) return errorResponse("Project not found", 404);
+        return jsonResponse(updated);
+      }
+      return errorResponse("Method not allowed", 405);
+    }
+
+    // --- Ideas: fast capture, never executable work ---
+    const ideasMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/ideas$/);
+    if (ideasMatch) {
+      if (method === "POST") {
+        const body = await readJsonBody(req);
+        const result = createIdea(
+          {
+            projectId: ideasMatch,
+            text: requireText(body.text, "text", 20_000),
+            title: optionalText(body.title, "title", 200) ?? undefined,
+            operationKey: optionalText(body.operationKey, "operationKey", 200) ?? undefined,
+            actor: actorFromRequest(req),
+          },
+          db
+        );
+        return jsonResponse(
+          {
+            item: result.item,
+            duplicate_of: result.duplicateOf?.id ?? null,
+            deduplicated: result.deduplicated,
+          },
+          result.deduplicated ? 200 : 201
+        );
+      }
+      if (method === "GET") {
+        return jsonResponse(getBacklogTree(ideasMatch, db).ideas);
+      }
+      return errorResponse("Method not allowed", 405);
+    }
+
+    // --- Product planning tree (ideas, epics, stories) ---
+    const planningMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/planning$/);
+    if (planningMatch && method === "GET") {
+      return jsonResponse(getBacklogTree(planningMatch, db));
+    }
+
+    // --- Append-only change log ---
+    const changesMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/changes$/);
+    if (changesMatch && method === "GET") {
+      const limit = intParam(url, "limit", { min: 1, max: 500, fallback: 50 });
+      return jsonResponse(listChanges(changesMatch, limit, db));
     }
 
     const projectMatch = pathParam(path, /^\/api\/projects\/([^/]+)$/);
@@ -461,6 +570,89 @@ export async function handleApiRoute(
       }
     }
 
+    // --- Work items (planning layer) ---
+    const workItemMatch = pathParam(path, /^\/api\/backlog\/items\/([^/]+)$/);
+    if (workItemMatch) {
+      if (method === "GET") {
+        const item = getWorkItem(workItemMatch, db);
+        if (!item) return errorResponse("Work item not found", 404);
+        return jsonResponse(item);
+      }
+      if (method === "PATCH") {
+        const body = await readJsonBody(req);
+        const expectedVersion = optionalInt(
+          body.expectedVersion,
+          "expectedVersion",
+          1,
+          Number.MAX_SAFE_INTEGER
+        );
+        if (expectedVersion === undefined) {
+          return errorResponse(`"expectedVersion" is required`);
+        }
+
+        const status =
+          body.status === undefined
+            ? undefined
+            : (optionalEnum(body.status, "status", WORK_ITEM_STATUSES) as WorkItemStatus);
+        const definition =
+          body.definition === undefined
+            ? undefined
+            : (optionalEnum(
+                body.definition,
+                "definition",
+                WORK_ITEM_DEFINITIONS
+              ) as WorkItemDefinition);
+        const priority =
+          body.priority === undefined
+            ? undefined
+            : (optionalEnum(body.priority, "priority", WORK_ITEM_PRIORITIES) as WorkItemPriority);
+
+        const updated = updateWorkItem(
+          workItemMatch,
+          expectedVersion,
+          {
+            title: body.title === undefined ? undefined : requireText(body.title, "title", 200),
+            description: optionalText(body.description, "description", 20_000),
+            status,
+            definition,
+            priority,
+            position: optionalInt(body.position, "position", -100_000, 100_000),
+            parentId:
+              body.parentId === undefined
+                ? undefined
+                : body.parentId === null
+                  ? null
+                  : requireText(body.parentId, "parentId", 200),
+          },
+          actorFromRequest(req),
+          db
+        );
+        return jsonResponse(updated);
+      }
+      if (method === "DELETE") {
+        const body = await readJsonBody(req);
+        const expectedVersion = optionalInt(
+          body.expectedVersion,
+          "expectedVersion",
+          1,
+          Number.MAX_SAFE_INTEGER
+        );
+        if (expectedVersion === undefined) {
+          return errorResponse(`"expectedVersion" is required`);
+        }
+        const reason = requireText(body.reason, "reason", 500);
+        const discarded = discardWorkItem(
+          workItemMatch,
+          expectedVersion,
+          reason,
+          actorFromRequest(req),
+          db
+        );
+        return jsonResponse(discarded);
+      }
+      return errorResponse("Method not allowed", 405);
+    }
+
     // --- Individual Tasks ---
     const taskMatch = pathParam(path, /^\/api\/tasks\/([^/]+)$/);
     if (taskMatch) {
@@ -584,6 +776,12 @@ export async function handleApiRoute(
   } catch (err) {
     if (err instanceof HttpError) {
       return errorResponse(err.message, err.status);
+    }
+    if (err instanceof WorkItemConflictError) {
+      return conflictResponse(err.message, err.current);
+    }
+    if (err instanceof WorkItemValidationError) {
+      return errorResponse(err.message, 422);
     }
     if (err instanceof TaskValidationError) {
       return errorResponse(err.message, 422);

@@ -1,7 +1,13 @@
 import { Database } from "bun:sqlite";
 import { getDatabase } from "../db/connection.ts";
-import { resolveCurrentProject } from "../domain/project.ts";
+import {
+  resolveCurrentProject,
+  setProjectMode,
+  isProjectMode,
+  classifyWorkspace,
+} from "../domain/project.ts";
 import { listSections } from "../domain/section.ts";
+import { createIdea, getBacklogTree } from "../domain/backlog/work-item.ts";
 import {
   createTask,
   listTasks,
@@ -87,9 +93,128 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
   try {
     switch (command.toLowerCase()) {
     case "init": {
+      const classification = classifyWorkspace(process.cwd(), db);
+      if (classification.situation === "ambiguous") {
+        fail(
+          `Refusing to initialise a project in a generic location. ${classification.reason} Run it inside the product directory instead.`
+        );
+        return;
+      }
+
       const project = resolveCurrentProject(process.cwd(), db);
+      const requestedMode = flags["mode"];
+      if (requestedMode !== undefined) {
+        if (!isProjectMode(requestedMode)) {
+          fail(`Invalid mode "${String(requestedMode)}". Allowed: legacy, product.`);
+          return;
+        }
+        const updated = setProjectMode(project.id, requestedMode, "user:cli", db);
+        if (updated) {
+          console.log(
+            `[RequireFlow] Project initialized: "${updated.name}" (ID: ${updated.id})`
+          );
+          console.log(`Root Path: ${updated.root_path || process.cwd()}`);
+          console.log(`Mode: ${updated.mode}`);
+          console.log(`Situation: ${classification.situation}`);
+          break;
+        }
+      }
       console.log(`[RequireFlow] Project initialized: "${project.name}" (ID: ${project.id})`);
       console.log(`Root Path: ${project.root_path || process.cwd()}`);
+      console.log(`Mode: ${project.mode}`);
+      console.log(`Situation: ${classification.situation}`);
+      break;
+    }
+
+    case "mode": {
+      const project = resolveCurrentProject(process.cwd(), db);
+      const requested = positionals[0];
+
+      if (requested === undefined) {
+        console.log(`Project "${project.name}" mode: ${project.mode}`);
+        break;
+      }
+
+      if (!isProjectMode(requested)) {
+        fail(`Invalid mode "${requested}". Allowed: legacy, product.`);
+        return;
+      }
+
+      const updated = setProjectMode(project.id, requested, "user:cli", db);
+      console.log(`✓ Project "${updated?.name}" mode: ${updated?.mode}`);
+      break;
+    }
+
+    case "idea":
+    case "capture": {
+      const text = positionals.join(" ").trim() || (flags["text"] as string | undefined);
+      if (!text) {
+        fail('Idea text is required. Usage: requireflow idea "texto de la idea"');
+        return;
+      }
+
+      const classification = classifyWorkspace(process.cwd(), db);
+      if (classification.situation === "ambiguous") {
+        fail(
+          `Refusing to capture an idea outside a product. ${classification.reason} Open the product directory first.`
+        );
+        return;
+      }
+
+      const project = resolveCurrentProject(process.cwd(), db);
+      const result = createIdea(
+        {
+          projectId: project.id,
+          text,
+          operationKey: (flags["key"] as string | undefined) ?? undefined,
+        },
+        db
+      );
+      if (flags["json"]) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`✓ Idea captured: ${result.item.title}`);
+        console.log(`  id: ${result.item.id}`);
+        console.log(`  project: ${project.name} (${result.item.status})`);
+        if (result.duplicateOf) {
+          console.log(
+            `  ! Similar idea already exists: "${result.duplicateOf.title}" (${result.duplicateOf.id})`
+          );
+        }
+      }
+      break;
+    }
+
+    case "backlog": {
+      const project = resolveCurrentProject(process.cwd(), db);
+      const tree = getBacklogTree(project.id, db);
+
+      if (flags["json"]) {
+        console.log(JSON.stringify(tree, null, 2));
+        break;
+      }
+
+      console.log(`\n=== Product Backlog: ${project.name} (${project.mode}) ===`);
+      console.log(`\n💡 Ideas (${tree.ideas.length}):`);
+      for (const idea of tree.ideas) {
+        console.log(`  [${idea.status}] ${idea.id.slice(0, 8)} - ${idea.title}`);
+      }
+
+      console.log(`\n🧩 Epics (${tree.epics.length}):`);
+      for (const epic of tree.epics) {
+        console.log(`  ${epic.code ?? "E??"} ${epic.title} (${epic.stories.length} stories)`);
+        for (const story of epic.stories) {
+          console.log(`     - ${story.code ?? "H???"} [${story.status}] ${story.title}`);
+        }
+      }
+
+      if (tree.ungrouped.length > 0) {
+        console.log(`\n⚠ Stories without epic (${tree.ungrouped.length}):`);
+        for (const story of tree.ungrouped) {
+          console.log(`  ${story.code ?? "H???"} - ${story.title}`);
+        }
+      }
+      console.log("");
       break;
     }
 
@@ -98,6 +223,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
       const tasks = listTasks(project.id, { excludeArchived: true }, db);
 
       console.log(`\n=== RequireFlow Status: ${project.name} ===`);
+      console.log(`Mode: ${project.mode}`);
       if (tasks.length === 0) {
         console.log("No active tasks in board. Use 'requireflow add <title>' to create one.\n");
         return;
@@ -350,8 +476,11 @@ USAGE:
   requireflow <command> [arguments] [flags]
 
 COMMANDS:
-  init                  Link or initialize current directory as active project
+  init [--mode <m>]    Link or initialize current directory as active project
+  mode [legacy|product] Show or switch the project workflow mode
   status                Show active Kanban status (To Do, In Progress, Done)
+  idea "<text>"         Capture a raw idea without creating executable work
+  backlog               Show ideas, epics and stories for the project
   add "<title>"         Add a task to backlog (-t type, -p priority, -s section)
   next                  Get the highest priority pending task to work on
   start <id>            Start working on a task (records started_at)

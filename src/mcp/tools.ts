@@ -11,6 +11,9 @@ import {
   createProject,
   listProjects,
   detectProject,
+  classifyWorkspace,
+  setProjectMode,
+  isProjectMode,
 } from "../domain/project.ts";
 import {
   createTask,
@@ -26,6 +29,11 @@ import {
 import { archiveDoneTasks } from "../domain/archive.ts";
 import { searchHistory } from "../domain/history.ts";
 import { calculateProjectMetrics } from "../domain/efficiency.ts";
+import {
+  createIdea,
+  getBacklogTree,
+  WorkItemConflictError,
+} from "../domain/backlog/work-item.ts";
 
 /**
  * Resolves the project a tool call targets.
@@ -67,12 +75,16 @@ async function runTool(name: string, action: () => unknown): Promise<CallToolRes
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const detail =
+      err instanceof WorkItemConflictError
+        ? `\nCurrent state:\n${JSON.stringify(err.current, null, 2)}`
+        : "";
     return {
       isError: true,
       content: [
         {
           type: "text" as const,
-          text: `Error executing ${name}: ${message}`,
+          text: `Error executing ${name}: ${message}${detail}`,
         },
       ],
     };
@@ -179,6 +191,111 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
               },
               db
             );
+          })
+      )
+  );
+
+  // 1d. rf_workspace_classify / workspace_classify
+  registerDual(
+    "rf_workspace_classify",
+    "workspace_classify",
+    "Classify the working directory (linked, subfolder, nested repo, empty or unregistered) without creating anything",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          cwd: z.string().optional().describe("Directory to classify (defaults to the process cwd)"),
+        },
+        (args) =>
+          runTool("rf_workspace_classify", () =>
+            classifyWorkspace(args.cwd || process.cwd(), db)
+          )
+      )
+  );
+
+  // 1e. rf_project_set_mode / project_set_mode
+  registerDual(
+    "rf_project_set_mode",
+    "project_set_mode",
+    "Switch a project between the legacy task workflow and the product backlog mode",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          projectId: z.string().optional().describe("Project ID (defaults to current project)"),
+          mode: z.enum(["legacy", "product"]).describe("Target project mode"),
+        },
+        (args) =>
+          runTool("rf_project_set_mode", () => {
+            if (!isProjectMode(args.mode)) {
+              throw new Error(`Invalid mode "${String(args.mode)}". Allowed: legacy, product.`);
+            }
+            const pId = resolveProjectId(args.projectId, db);
+            const updated = setProjectMode(pId, args.mode, "agent:mcp", db);
+            if (!updated) throw new Error(`Project not found with ID: ${pId}`);
+            return updated;
+          })
+      )
+  );
+
+  // 1f. rf_idea_capture / idea_capture
+  registerDual(
+    "rf_idea_capture",
+    "idea_capture",
+    "Capture a raw idea in seconds without converting it into executable work",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          text: z.string().min(1).describe("The idea exactly as the user expressed it"),
+          projectId: z.string().optional().describe("Project ID (defaults to current project)"),
+          title: z.string().optional().describe("Optional short headline; derived from the text otherwise"),
+          operationKey: z
+            .string()
+            .optional()
+            .describe("Idempotency key: repeating the same key returns the same idea"),
+        },
+        (args) =>
+          runTool("rf_idea_capture", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const result = createIdea(
+              {
+                projectId: pId,
+                text: args.text,
+                title: args.title,
+                operationKey: args.operationKey,
+                actor: "agent:mcp",
+              },
+              db
+            );
+            return {
+              item: result.item,
+              duplicate_of: result.duplicateOf?.id ?? null,
+              deduplicated: result.deduplicated,
+            };
+          })
+      )
+  );
+
+  // 1g. rf_backlog_tree / backlog_tree
+  registerDual(
+    "rf_backlog_tree",
+    "backlog_tree",
+    "Read the whole planning picture: ideas, epics with their stories, and ungrouped stories",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          projectId: z.string().optional().describe("Project ID (defaults to current project)"),
+        },
+        (args) =>
+          runTool("rf_backlog_tree", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            return getBacklogTree(pId, db);
           })
       )
   );
