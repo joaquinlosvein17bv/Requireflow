@@ -13,6 +13,7 @@ import {
 import { exportLegacyDatabase } from "../domain/legacy/export.ts";
 import {
   resolveCurrentProject,
+  resolveRegisteredProject,
   initializeProject,
   setProjectMode,
   isProjectMode,
@@ -124,8 +125,20 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
   return { command, positionals, flags };
 }
 
-export async function runCli(argv: string[] = process.argv, db: Database = getDatabase()) {
+export async function runCli(
+  argv: string[] = process.argv,
+  db: Database = getDatabase(),
+  cwd: string = process.cwd()
+) {
   const { command, positionals, flags } = parseArgs(argv);
+
+  /**
+   * Reads and lifecycle commands may only act on a project that already exists.
+   * Authority commands (`add`, `idea`) keep the legacy bootstrap, but it now
+   * targets the caller's folder instead of an ancestor git root.
+   */
+  const activeProject = () => resolveRegisteredProject(cwd, db);
+  const authoringProject = () => resolveCurrentProject(cwd, db);
 
   try {
     switch (command.toLowerCase()) {
@@ -143,7 +156,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
 
       const result = initializeProject(
         {
-          cwd: process.cwd(),
+          cwd,
           explicitRoot: typeof rootFlag === "string" ? rootFlag : undefined,
           mode: requestedMode,
           actor: "user:cli",
@@ -154,14 +167,14 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
       console.log(
         `[RequireFlow] Project initialized: "${result.project.name}" (ID: ${result.project.id})`
       );
-      console.log(`Root Path: ${result.project.root_path || process.cwd()}`);
+      console.log(`Root Path: ${result.project.root_path || cwd}`);
       console.log(`Mode: ${result.project.mode}`);
       console.log(`Situation: ${result.situation}`);
       break;
     }
 
     case "mode": {
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = activeProject();
       const requested = positionals[0];
 
       if (requested === undefined) {
@@ -187,7 +200,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
         return;
       }
 
-      const classification = classifyWorkspace(process.cwd(), db);
+      const classification = classifyWorkspace(cwd, db);
       if (classification.situation === "ambiguous") {
         fail(
           `Refusing to capture an idea outside a product. ${classification.reason} Open the product directory first.`
@@ -195,7 +208,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
         return;
       }
 
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = authoringProject();
       const result = createIdea(
         {
           projectId: project.id,
@@ -220,7 +233,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
     }
 
     case "backlog": {
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = activeProject();
       const tree = getBacklogTree(project.id, db);
 
       if (flags["json"]) {
@@ -333,7 +346,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
     }
 
     case "status": {
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = activeProject();
       const tasks = listTasks(project.id, { excludeArchived: true }, db);
 
       console.log(`\n=== RequireFlow Status: ${project.name} ===`);
@@ -384,7 +397,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
         return;
       }
 
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = authoringProject();
       const type = typeArg;
       const priority = priorityArg;
       const desc = (flags["d"] || flags["desc"] || flags["description"]) as string | undefined;
@@ -426,7 +439,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
     }
 
     case "next": {
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = activeProject();
       const sectionArg = (flags["s"] || flags["section"]) as string | undefined;
       let sectionId: string | undefined = undefined;
 
@@ -471,7 +484,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
         return;
       }
 
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = authoringProject();
       const tasks = listTasks(project.id, { excludeArchived: false }, db);
       const matched = tasks.find((t) => t.id === taskIdArg || t.id.startsWith(taskIdArg));
 
@@ -492,7 +505,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
         return;
       }
 
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = authoringProject();
       const tasks = listTasks(project.id, { excludeArchived: false }, db);
       const matched = tasks.find((t) => t.id === taskIdArg || t.id.startsWith(taskIdArg));
 
@@ -512,7 +525,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
     }
 
     case "archive": {
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = authoringProject();
       const force = flagToBoolean(flags["force"], false);
       const threshold = flagToNumber(flags["threshold"] ?? flags["hours"], {
         min: 0,
@@ -529,12 +542,12 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
 
     case "group":
     case "groups": {
-      await runGroupCommand(positionals, flags, db);
+      await runGroupCommand(positionals, flags, db, cwd);
       break;
     }
 
     case "export": {
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = activeProject();
       const outDir =
         (flags["out"] as string | undefined) ||
         path.resolve("backlog-export", backlogSlug(project.name));
@@ -594,7 +607,7 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
 
     case "stats": {
       const days = flagToNumber(flags["days"], { min: 1, max: 3650, label: "--days" }) ?? 30;
-      const project = resolveCurrentProject(process.cwd(), db);
+      const project = activeProject();
       const metrics = calculateProjectMetrics(project.id, days, db);
 
       console.log(`\n=== Efficiency Metrics: ${project.name} (Last ${days} Days) ===`);
@@ -645,9 +658,10 @@ function assertInteractiveHuman(action: string): void {
 async function runGroupCommand(
   positionals: string[],
   flags: Record<string, string | boolean>,
-  db: Database
+  db: Database,
+  cwd: string = process.cwd()
 ): Promise<void> {
-  const project = resolveCurrentProject(process.cwd(), db);
+  const project = resolveRegisteredProject(cwd, db);
   const sub = (positionals[0] ?? "list").toLowerCase();
   const json = flagToBoolean(flags["json"], false);
 

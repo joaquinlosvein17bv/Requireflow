@@ -86,40 +86,54 @@ export function getProjectByRootKey(
 }
 
 /**
+ * Every key form a directory can legitimately be matched by.
+ *
+ * The resolved path keeps the spelling the caller used; the real path collapses
+ * Windows short names (`PROGRA~1`) and junctions, so the same directory never
+ * looks like two different projects.
+ */
+export function canonicalRootKeys(input: string): string[] {
+  const keys: string[] = [];
+  const resolved = normalizeRootPath(input);
+  if (resolved) {
+    keys.push(resolved);
+  }
+  try {
+    const realKey = normalizeRootPath(fs.realpathSync.native(path.resolve(input)));
+    if (realKey && !keys.includes(realKey)) {
+      keys.push(realKey);
+    }
+  } catch {
+    // A missing path can only be matched by its resolved spelling.
+  }
+  return keys;
+}
+
+/**
  * Detects the project that owns a directory without creating anything.
  *
  * 1. An exact root match on the directory itself always wins, so a project
  *    registered at a plain folder is found even when an ancestor happens to be
  *    a git repository.
- * 2. A subdirectory of a registered repository resolves to that repository.
- * 3. Otherwise the deepest registered root containing the directory is used,
+ * 2. Otherwise the deepest registered root containing the directory is used,
  *    but never across a git boundary: a nested checkout is its own project and
  *    must not be claimed by an umbrella project registered on its parent.
+ * 3. A git root that is itself registered still wins when nothing deeper does,
+ *    which is the legitimate "subdirectory of a registered repository" case.
  */
 export function detectProject(
   cwd: string = process.cwd(),
   db: Database = getDatabase()
 ): ProjectDetection {
   const cwdPath = path.resolve(cwd);
-  const cwdKey = normalizeRootPath(cwdPath);
+  const cwdKeys = canonicalRootKeys(cwdPath);
   const gitRoot = meaningfulGitRoot(cwdPath);
-  const gitKey = gitRoot ? normalizeRootPath(gitRoot) : null;
+  const gitKeys = gitRoot ? canonicalRootKeys(gitRoot) : [];
 
-  const exact = getProjectByRootKey(cwdKey, db);
-  if (exact) {
-    return { project: exact, rootPath: cwdPath, rootKey: cwdKey, isLinked: true, source: "exact" };
-  }
-
-  if (gitKey && gitKey !== cwdKey) {
-    const repository = getProjectByRootKey(gitKey, db);
-    if (repository) {
-      return {
-        project: repository,
-        rootPath: cwdPath,
-        rootKey: cwdKey,
-        isLinked: true,
-        source: "nested",
-      };
+  for (const key of cwdKeys) {
+    const exact = getProjectByRootKey(key, db);
+    if (exact) {
+      return { project: exact, rootPath: cwdPath, rootKey: key, isLinked: true, source: "exact" };
     }
   }
 
@@ -131,11 +145,14 @@ export function detectProject(
   let bestLength = -1;
   for (const candidate of candidates) {
     const key = candidate.root_key;
-    if (!key || !isInsideRoot(cwdKey, key)) continue;
+    if (!key) continue;
+
+    const matched = cwdKeys.find((cwdKey) => isInsideRoot(cwdKey, key));
+    if (!matched) continue;
 
     // A git repository between the candidate root and the directory means the
     // directory belongs to that repository, not to the umbrella above it.
-    if (gitKey && gitKey !== key && isInsideRoot(gitKey, key)) continue;
+    if (gitKeys.some((gitKey) => gitKey !== key && isInsideRoot(gitKey, key))) continue;
 
     if (key.length > bestLength) {
       best = candidate;
@@ -144,10 +161,22 @@ export function detectProject(
   }
 
   if (best) {
-    return { project: best, rootPath: cwdPath, rootKey: cwdKey, isLinked: true, source: "nested" };
+    return {
+      project: best,
+      rootPath: cwdPath,
+      rootKey: cwdKeys[0] ?? normalizeRootPath(cwdPath),
+      isLinked: true,
+      source: "nested",
+    };
   }
 
-  return { project: null, rootPath: cwdPath, rootKey: cwdKey, isLinked: false, source: "none" };
+  return {
+    project: null,
+    rootPath: cwdPath,
+    rootKey: cwdKeys[0] ?? normalizeRootPath(cwdPath),
+    isLinked: false,
+    source: "none",
+  };
 }
 
 /** Projects whose stored root is missing on disk, a symptom of old name collisions. */
@@ -162,14 +191,49 @@ export function findProjectsWithMissingRoots(db: Database = getDatabase()): Proj
   });
 }
 
+/**
+ * Resolves the project for a command that may legitimately start new work.
+ *
+ * Detection runs first, so an already registered project is never duplicated.
+ * The implicit registration that follows targets the directory the caller is
+ * actually in — never an ancestor git root, which is what manufactured phantom
+ * umbrella projects.
+ */
 export function resolveCurrentProject(
   cwd: string = process.cwd(),
   db: Database = getDatabase()
 ): Project {
-  const rootPath = resolveProjectRoot(cwd);
-  const projectName = path.basename(rootPath) || "default-project";
+  const detection = detectProject(cwd, db);
+  if (detection.project) {
+    return detection.project;
+  }
 
+  const rootPath = path.resolve(cwd);
+  const projectName = path.basename(rootPath) || "default-project";
   return getOrCreateProject(projectName, rootPath, db);
+}
+
+/**
+ * Resolves the project for a read or lifecycle command.
+ *
+ * Read paths must never mutate the project table: an unregistered directory is
+ * an error asking the user to choose, not an invitation to create a project.
+ */
+export function resolveRegisteredProject(
+  cwd: string = process.cwd(),
+  db: Database = getDatabase()
+): Project {
+  const detection = detectProject(cwd, db);
+  if (detection.project) {
+    return detection.project;
+  }
+
+  const cwdPath = path.resolve(cwd);
+  throw new Error(
+    `No project is registered for "${cwdPath}". ` +
+      `Run "requireflow init" in that folder, or run the command from a registered project. ` +
+      `Use rf_project_list (MCP) or the dashboard to see the registered roots.`
+  );
 }
 
 export interface InitializeProjectInput {
