@@ -608,8 +608,8 @@ L2 (2026-10-27) Implementation evidence:
 - MCP `resolveProjectId` no longer auto-creates a project when `projectId` is omitted; it resolves only an existing project and fails loudly otherwise.
 - Skills: `product-backlog` v2.3.0 and `requireflow-protocol` v2.2.0.
 - Tests: `bun test` → 238 pass, 0 fail; `bun run typecheck` → exit 0.
-- Build: compiling `bin/requireflow.ts` to `dist/requireflow-next.exe` succeeded and the UI bundle was copied. `bun run build` could not replace `dist/requireflow.exe` because the running OpenCode MCP holds the file (`EPERM`). The canonical rebuild requires restarting OpenCode first.
+- Build: `bun run build` succeeded. The running OpenCode MCP held `dist/requireflow.exe`, so the old file was renamed to `dist/requireflow.old.exe` (still in use until OpenCode restarts); the canonical `dist/requireflow.exe` now contains the new build and the UI bundle was refreshed.
 - Binary verification: isolated V2 DB in `%TEMP%`; `init --mode product` inside an empty folder under an ancestor `.git` registered the child folder, schema v7, 1 project, legacy v1 untouched. A non-empty child failed without `--root` and succeeded with `--root .`.
-- MCP binary verification: `rf_group_list/get/next/propose/refine/start/evidence/defect/correction` registered; `rf_project_list` returned 1 project; `rf_group_list` returned 0 groups.
+- Canonical binary MCP verification: `dist/requireflow.exe mcp` registered `rf_group_list/get/next/propose/refine/start/evidence/defect/correction`; `rf_project_list` returned 1 project; `rf_group_list` returned 0 groups.
 - Commits: `81d78be` fix(init), `48003cc` fix(mcp) + P01–P08 tests, `f3bf7ce` docs(skills) + this feature document.
 
