@@ -136,4 +136,27 @@ describe("V2 storage isolation from the legacy database", () => {
       db.close();
     }
   });
+
+  it("allows an older V2 database to run its pending internal migrations", () => {
+    const file = path.join(tempDir(), "v2-behind.db");
+    const created = createDatabase(file);
+    // Simulate a V2 file created by a previous build (schema v6).
+    created.run("DELETE FROM _schema_migrations WHERE version = 7");
+    created.close();
+
+    const inspection = inspectDatabase(file);
+    expect(inspection.schemaVersion).toBe(6);
+    expect(inspection.isV2).toBe(true);
+    expect(inspection.isLegacy).toBe(false);
+
+    const upgraded = createDatabase(file);
+    try {
+      const row = upgraded
+        .query("SELECT MAX(version) v FROM _schema_migrations")
+        .get() as { v: number };
+      expect(Number(row.v)).toBe(V2_SCHEMA_VERSION);
+    } finally {
+      upgraded.close();
+    }
+  });
 });

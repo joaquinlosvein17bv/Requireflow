@@ -73,6 +73,8 @@ export interface DatabaseInspection {
   exists: boolean;
   sizeBytes: number;
   hasUserTables: boolean;
+  /** True when the file carries RequireFlow 2 structures (work_items / projects.mode). */
+  isV2: boolean;
   schemaVersion: number;
   isLegacy: boolean;
 }
@@ -85,6 +87,7 @@ export function inspectDatabase(dbPath: string): DatabaseInspection {
       exists: false,
       sizeBytes: 0,
       hasUserTables: false,
+      isV2: false,
       schemaVersion: 0,
       isLegacy: false,
     };
@@ -97,6 +100,7 @@ export function inspectDatabase(dbPath: string): DatabaseInspection {
       exists: false,
       sizeBytes: 0,
       hasUserTables: false,
+      isV2: false,
       schemaVersion: 0,
       isLegacy: false,
     };
@@ -109,6 +113,7 @@ export function inspectDatabase(dbPath: string): DatabaseInspection {
       exists: true,
       sizeBytes,
       hasUserTables: false,
+      isV2: false,
       schemaVersion: 0,
       isLegacy: false,
     };
@@ -132,13 +137,24 @@ export function inspectDatabase(dbPath: string): DatabaseInspection {
       schemaVersion = Number(row?.v ?? 0);
     }
 
+    // A V2 database may be behind the current build (for example v6 when v7
+    // exists). That is a normal internal upgrade, not a legacy v1 file: the v1
+    // schema has neither work_items nor projects.mode.
+    const hasWorkItems = tables.some((table) => table.name === "work_items");
+    const projectColumns = tables.some((table) => table.name === "projects")
+      ? (db.query("PRAGMA table_info(projects)").all() as Array<{ name: string }>)
+      : [];
+    const hasMode = projectColumns.some((column) => column.name === "mode");
+    const isV2 = hasWorkItems || hasMode;
+
     return {
       path: resolved,
       exists: true,
       sizeBytes,
       hasUserTables,
+      isV2,
       schemaVersion,
-      isLegacy: hasUserTables && schemaVersion < V2_SCHEMA_VERSION,
+      isLegacy: hasUserTables && !isV2,
     };
   } finally {
     db.close();
