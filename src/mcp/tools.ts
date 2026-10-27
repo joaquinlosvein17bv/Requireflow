@@ -39,6 +39,9 @@ import {
 import {
   addAcceptanceCriterion,
   recordDecision,
+  resolveAcceptanceCriterion,
+  retireAcceptanceCriterion,
+  supersedeAcceptanceCriterion,
 } from "../domain/backlog/criteria.ts";
 import {
   getIncrementView,
@@ -609,6 +612,79 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
               { incrementId: group.id, text: args.text, actor: "agent:mcp" },
               db
             );
+          })
+      )
+  );
+
+  // 1m2. rf_ac_supersede / ac_supersede
+  registerDual(
+    "rf_ac_supersede",
+    "ac_supersede",
+    "Replace a criterion with corrected text. The old criterion stays as superseded history and the replacement gets a new AC code",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          criterion: z.string().min(1).describe("Criterion code (AC-G01-005) or id"),
+          expectedVersion: z
+            .number()
+            .int()
+            .positive()
+            .describe("Version read from rf_group_get; rejects a stale replacement"),
+          text: z.string().min(1).describe("Corrected, confirmed criterion"),
+          projectId: z.string().optional(),
+        },
+        (args) =>
+          runTool("rf_ac_supersede", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const current = resolveAcceptanceCriterion(pId, args.criterion, db);
+            const replacement = supersedeAcceptanceCriterion(
+              current.id,
+              args.expectedVersion,
+              args.text,
+              "agent:mcp",
+              db
+            );
+            return {
+              superseded: resolveAcceptanceCriterion(pId, current.id, db),
+              replacement,
+            };
+          })
+      )
+  );
+
+  // 1m3. rf_ac_retire / ac_retire
+  registerDual(
+    "rf_ac_retire",
+    "ac_retire",
+    "Retire a criterion with a confirmed reason. It stays in the history and stops counting as active scope",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          criterion: z.string().min(1).describe("Criterion code (AC-G01-005) or id"),
+          expectedVersion: z
+            .number()
+            .int()
+            .positive()
+            .describe("Version read from rf_group_get; rejects a stale retirement"),
+          reason: z.string().min(1).describe("Confirmed reason for retiring the criterion"),
+          projectId: z.string().optional(),
+        },
+        (args) =>
+          runTool("rf_ac_retire", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const current = resolveAcceptanceCriterion(pId, args.criterion, db);
+            const retired = retireAcceptanceCriterion(
+              current.id,
+              args.expectedVersion,
+              args.reason,
+              "agent:mcp",
+              db
+            );
+            return { retired };
           })
       )
   );

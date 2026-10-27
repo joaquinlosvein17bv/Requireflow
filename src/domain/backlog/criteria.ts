@@ -225,6 +225,34 @@ export function listAcceptanceCriteria(
     .all(incrementId) as AcceptanceCriterion[];
 }
 
+/**
+ * Resolves a criterion by its stable code (`AC-G01-005`) or its id.
+ *
+ * Scoped to the project so a code owned by another project cannot be used to
+ * edit a criterion the caller never read.
+ */
+export function resolveAcceptanceCriterion(
+  projectId: string,
+  codeOrId: string,
+  db: Database = getDatabase()
+): AcceptanceCriterion {
+  const value = typeof codeOrId === "string" ? codeOrId.trim() : "";
+  if (value === "") {
+    throw new PlanValidationError(`"criterion" is required`);
+  }
+  const row = db
+    .query(
+      "SELECT * FROM acceptance_criteria WHERE project_id = ? AND (code = ? OR id = ?)"
+    )
+    .get(projectId, value, value) as AcceptanceCriterion | null;
+  if (!row) {
+    throw new PlanValidationError(
+      `Acceptance criterion not found: ${value}. Pass the AC-<group>-### code or the criterion id.`
+    );
+  }
+  return row;
+}
+
 export function addAcceptanceCriterion(
   input: { incrementId: string; text: string; actor?: string; position?: number },
   db: Database = getDatabase()

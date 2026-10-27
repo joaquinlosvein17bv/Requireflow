@@ -76,6 +76,8 @@ Descubre siempre antes de usar. En RequireFlow 2 existen:
 | Guardar todos los grupos de una vez | `rf_group_propose` (atomico, idempotente por codigo) |
 | Reagrupar / cambiar alcance | `rf_group_refine` (`expectedVersion`) |
 | Criterios de aceptacion | `rf_ac_add` |
+| Corregir un criterio conservando el anterior | `rf_ac_supersede` (`expectedVersion` obligatorio) |
+| Retirar un criterio conservando su motivo e historial | `rf_ac_retire` (`expectedVersion` obligatorio) |
 | Decisiones confirmadas | `rf_decision_record` |
 | Iniciar implementacion | `rf_group_start` (solo si el alcance esta aprobado y vigente) |
 | Reportar evidencia de ODD | `rf_group_evidence` |

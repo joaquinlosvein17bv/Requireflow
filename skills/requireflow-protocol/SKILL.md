@@ -25,7 +25,7 @@ Planning — ideas, epics, stories, groups G##, decisions, acceptance criteria, 
 Before acting, discover the tools this installation actually exposes. Do not assume a tool exists because a document or a previous session mentioned it.
 
 - Project and execution tools: `rf_project_detect`, `rf_project_list`, `rf_project_add`, `rf_task_*`, `rf_history_search`, `rf_efficiency_stats`, `rf_archive_run`, `rf_workspace_classify`, `rf_project_set_mode`, `rf_backlog_tree`, `rf_idea_capture`.
-- Planning and approval tools: `rf_group_list`, `rf_group_get`, `rf_group_next`, `rf_group_propose`, `rf_group_refine`, `rf_work_item_create`, `rf_work_item_update`, `rf_idea_promote`, `rf_ac_add`, `rf_decision_record`, `rf_group_start`, `rf_group_evidence`, `rf_group_defect`, `rf_group_correction`.
+- Planning and approval tools: `rf_group_list`, `rf_group_get`, `rf_group_next`, `rf_group_propose`, `rf_group_refine`, `rf_work_item_create`, `rf_work_item_update`, `rf_idea_promote`, `rf_ac_add`, `rf_ac_supersede`, `rf_ac_retire`, `rf_decision_record`, `rf_group_start`, `rf_group_evidence`, `rf_group_defect`, `rf_group_correction`.
 
 If the task the user asks for needs a tool that is not registered, **stop and say so**. Never simulate persistence, never invent an ID, and never write product state into an execution table as a substitute.
 
@@ -70,7 +70,7 @@ Product mode changes the rules:
 2. Resolve the target group: the one the user named (`G01`, `G02`, …) or `rf_group_next` when they say "the next one". `rf_group_next` never skips a group waiting for human review; if it reports `blocked`, report the blocker and stop.
 3. Read the canonical view with `rf_group_get`. It returns goal, stories, dependencies, confirmed decisions, acceptance criteria, approved revision, `drifted`, `canExecute`, `readiness.blockers` and `nextAction`. This **is** the handoff: do not ask the user to paste a document and do not generate a manual handoff package.
 4. Interpret `nextAction`:
-   - `refine` → the group still needs work. Read `readiness.blockers`, ask the user only what is missing (one to three questions per round) and refine with `rf_group_refine` / `rf_ac_add` / `rf_work_item_update`.
+   - `refine` → the group still needs work. Read `readiness.blockers`, ask the user only what is missing (one to three questions per round) and refine with `rf_group_refine` / `rf_ac_add` / `rf_ac_supersede` / `rf_ac_retire` / `rf_work_item_update`.
    - `request_approval` → the scope is not approved, or it drifted after approval. Ask the user to approve in the dashboard or an interactive terminal. You cannot do it: there is no MCP approval tool.
    - `implement` → approved and current. Continue with step 6.
    - `await_review` → the group is waiting for the user's test. Do not implement it again automatically.
