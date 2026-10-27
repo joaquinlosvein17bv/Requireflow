@@ -41,8 +41,8 @@ T5 Rewrite `skills/requireflow-protocol/SKILL.md` to v2.2.0. (S11) — done
 T6 Add regression tests P01–P08. (S9) — done (`test/consolidation.test.ts`, 8 tests)
 T7 Run `bun test`, `bun run typecheck`, `bun run build`. (S13) — tests and typecheck done; canonical build blocked by the running MCP (EPERM), alternate compile verified
 T8 Verify the compiled binary and MCP against an isolated V2 database. (S4, S13) — done
-T9 Commit coherent work units. (S13) — pending
-T10 Produce the final evidence report. (S13) — pending
+T9 Commit coherent work units. (S13) — done: `81d78be`, `48003cc`, `f3bf7ce`
+T10 Produce the final evidence report. (S13) — done in the final response
 
 ## Log
 
@@ -611,4 +611,5 @@ L2 (2026-10-27) Implementation evidence:
 - Build: compiling `bin/requireflow.ts` to `dist/requireflow-next.exe` succeeded and the UI bundle was copied. `bun run build` could not replace `dist/requireflow.exe` because the running OpenCode MCP holds the file (`EPERM`). The canonical rebuild requires restarting OpenCode first.
 - Binary verification: isolated V2 DB in `%TEMP%`; `init --mode product` inside an empty folder under an ancestor `.git` registered the child folder, schema v7, 1 project, legacy v1 untouched. A non-empty child failed without `--root` and succeeded with `--root .`.
 - MCP binary verification: `rf_group_list/get/next/propose/refine/start/evidence/defect/correction` registered; `rf_project_list` returned 1 project; `rf_group_list` returned 0 groups.
+- Commits: `81d78be` fix(init), `48003cc` fix(mcp) + P01–P08 tests, `f3bf7ce` docs(skills) + this feature document.
 
