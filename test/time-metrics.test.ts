@@ -130,15 +130,16 @@ describe("Cycle based metrics (RF-09, RF-22)", () => {
     completeTask(outside.id, "done", db);
     db.run("UPDATE task_cycles SET completed_at = ? WHERE task_id = ?", [daysAgo(31), outside.id]);
 
-    // Same calendar day as the cutoff, but 12 hours earlier: string comparison
-    // against datetime() used to count this one (RF-11).
+    // One second before the cutoff: the comparison is against ISO strings, so
+    // this must stay outside the window at any hour of the day. Using a fixed
+    // 02:00Z made the test depend on the current UTC time.
     const boundary = createTask({ projectId: project.id, title: "boundary" }, db);
     startTask(boundary.id, db);
     completeTask(boundary.id, "done", db);
     const cutoff = daysAgo(30);
-    const sameDayEarlier = `${cutoff.slice(0, 10)}T02:00:00.000Z`;
+    const justBeforeCutoff = new Date(Date.parse(cutoff) - 1000).toISOString();
     db.run("UPDATE task_cycles SET completed_at = ? WHERE task_id = ?", [
-      sameDayEarlier,
+      justBeforeCutoff,
       boundary.id,
     ]);
 

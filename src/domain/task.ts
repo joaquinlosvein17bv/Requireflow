@@ -3,6 +3,12 @@ import crypto from "node:crypto";
 import { getDatabase } from "../db/connection.ts";
 import { getSection } from "./section.ts";
 import { nowIso, secondsBetween } from "./time.ts";
+import { getProject } from "./project.ts";
+import {
+  assertTaskCanStart,
+  assertTaskCreationAllowed,
+  taskEligibility,
+} from "./backlog/eligibility.ts";
 
 export type TaskType = "feature" | "fix" | "bugfix" | "chore" | "refactor" | "debt";
 export type TaskPriority = "low" | "medium" | "high" | "blocker";
@@ -66,6 +72,8 @@ export interface Task {
   updated_at: string;
   section_name?: string | null;
   section_color?: string | null;
+  work_item_id?: string | null;
+  odd_task_ref?: string | null;
 }
 
 export interface CreateTaskInput {
@@ -80,6 +88,8 @@ export interface CreateTaskInput {
   storyPoints?: number;
   tags?: string[] | string;
   notes?: string;
+  workItemId?: string;
+  oddTaskRef?: string;
 }
 
 export interface TaskFilterOptions {
@@ -141,6 +151,12 @@ export function createTask(
     assertSectionBelongsToProject(data.sectionId, data.projectId, db);
   }
 
+  const project = getProject(data.projectId, db);
+  if (!project) {
+    throw new TaskValidationError(`Project not found with ID: ${data.projectId}`);
+  }
+  assertTaskCreationAllowed(project, data.workItemId, db);
+
   const id = crypto.randomUUID();
   const type = data.type || "feature";
   const priority = data.priority || "medium";
@@ -162,8 +178,9 @@ export function createTask(
     db.run(
       `INSERT INTO tasks (
         id, project_id, section_id, title, description, type, priority,
-        status, position, story_points, tags, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, position, story_points, tags, notes, work_item_id, odd_task_ref,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         data.projectId,
@@ -177,6 +194,8 @@ export function createTask(
         data.storyPoints ?? null,
         tagsStr,
         data.notes || null,
+        data.workItemId ?? null,
+        data.oddTaskRef ?? null,
         timestamp,
         timestamp,
       ]
@@ -251,11 +270,32 @@ export function listTasks(
   return db.query(query).all(...params) as Task[];
 }
 
-export function getNextTask(
+export interface BlockedTask {
+  id: string;
+  title: string;
+  reason: string;
+}
+
+export interface NextTaskDecision {
+  nextTask: Task | null;
+  blocked: BlockedTask[];
+}
+
+/**
+ * Returns the first eligible task plus an explicit reason for every task that
+ * was skipped. An agent must be able to explain a block instead of inventing
+ * work to escape it.
+ */
+export function getNextTaskDecision(
   projectId: string,
   sectionId?: string,
   db: Database = getDatabase()
-): Task | null {
+): NextTaskDecision {
+  const project = getProject(projectId, db);
+  if (!project) {
+    return { nextTask: null, blocked: [] };
+  }
+
   const statusPlaceholders = ELIGIBLE_STATUSES.map(() => "?").join(", ");
   const conditions: string[] = [
     "t.project_id = ?",
@@ -268,16 +308,40 @@ export function getNextTask(
     params.push(sectionId);
   }
 
-  const query = `
-    SELECT t.*, s.name as section_name, s.color as section_color
-    FROM tasks t
-    LEFT JOIN sections s ON t.section_id = s.id
-    WHERE ${conditions.join(" AND ")}
-    ORDER BY ${TASK_ORDER_BY}
-    LIMIT 1
-  `;
+  const candidates = db
+    .query(
+      `SELECT t.*, s.name as section_name, s.color as section_color
+         FROM tasks t
+         LEFT JOIN sections s ON t.section_id = s.id
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY ${TASK_ORDER_BY}`
+    )
+    .all(...params) as Task[];
 
-  return db.query(query).get(...params) as Task | null;
+  const blocked: BlockedTask[] = [];
+  for (const task of candidates) {
+    const eligibility = taskEligibility(task, project, db);
+    if (eligibility.eligible) {
+      return { nextTask: task, blocked: blocked.slice(0, 20) };
+    }
+    if (blocked.length < 20) {
+      blocked.push({
+        id: task.id,
+        title: task.title,
+        reason: eligibility.reason ?? "not eligible",
+      });
+    }
+  }
+
+  return { nextTask: null, blocked };
+}
+
+export function getNextTask(
+  projectId: string,
+  sectionId?: string,
+  db: Database = getDatabase()
+): Task | null {
+  return getNextTaskDecision(projectId, sectionId, db).nextTask;
 }
 
 /**
@@ -391,6 +455,10 @@ export function startTask(
   const current = getTask(taskId, db);
   if (!current) return null;
 
+  if (current.status !== "in_progress") {
+    assertTaskCanStart(current, db);
+  }
+
   const at = nowIso();
   const plan = planTransition(current, "in_progress", at);
   if (plan.fields.length === 0) {
@@ -499,6 +567,9 @@ export function updateTask(
   }
 
   if (updates.status !== undefined && updates.status !== current.status) {
+    if (updates.status === "in_progress") {
+      assertTaskCanStart(current, db);
+    }
     const plan = planTransition(current, updates.status, nowIso());
     fields.push(...plan.fields);
     values.push(...plan.values);

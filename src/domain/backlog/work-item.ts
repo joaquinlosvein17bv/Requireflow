@@ -5,6 +5,7 @@ import { getProject } from "../project.ts";
 import { nowIso } from "../time.ts";
 import { appendChange, LOCAL_ACTOR } from "../changelog.ts";
 import { readIdempotent, writeIdempotent } from "../idempotency.ts";
+import { hasPlaceholder } from "./scope.ts";
 
 export type WorkItemKind = "idea" | "epic" | "story";
 export type WorkItemStatus = "captured" | "draft" | "refined" | "ready" | "discarded";
@@ -123,6 +124,17 @@ function cleanText(value: string, field: string, max: number): string {
     throw new WorkItemValidationError(`"${field}" must be at most ${max} characters`);
   }
   return value;
+}
+
+/** Rejects placeholder markers: a structured requirement must be confirmed. */
+function cleanConfirmed(value: string, field: string, max: number): string {
+  const cleaned = cleanText(value, field, max);
+  if (hasPlaceholder(cleaned)) {
+    throw new WorkItemValidationError(
+      `"${field}" still contains an unspecified marker. Ask the user and persist only a confirmed value.`
+    );
+  }
+  return cleaned;
 }
 
 /** Derives a short, searchable title from the literal capture without losing it. */
@@ -405,12 +417,22 @@ export function createWorkItem(
     throw new WorkItemValidationError("An epic cannot have a parent");
   }
 
-  const title = cleanText(input.title, "title", MAX_TITLE);
+  const title = cleanConfirmed(input.title, "title", MAX_TITLE);
   const originalText = input.originalText ?? input.title;
+  const description =
+    input.description && input.description.trim() !== ""
+      ? cleanConfirmed(input.description, "description", MAX_TEXT)
+      : null;
   const timestamp = nowIso();
   const id = crypto.randomUUID();
   const status = input.status ?? "draft";
   const actor = input.actor || LOCAL_ACTOR;
+
+  if (status === "ready" && description === null) {
+    throw new WorkItemValidationError(
+      `A ${input.kind} cannot be ready without a confirmed description`
+    );
+  }
 
   db.transaction(() => {
     const code = nextCode(input.projectId, input.kind, db);
@@ -429,7 +451,7 @@ export function createWorkItem(
         code,
         title,
         originalText,
-        input.description ?? null,
+        description,
         status,
         input.definition ?? "unspecified",
         input.origin ?? "user",
@@ -499,11 +521,16 @@ export function updateWorkItem(
 
   if (patch.title !== undefined) {
     fields.push("title = ?");
-    values.push(cleanText(patch.title, "title", MAX_TITLE));
+    values.push(cleanConfirmed(patch.title, "title", MAX_TITLE));
   }
   if (patch.description !== undefined) {
     if (patch.description !== null && patch.description.length > MAX_TEXT) {
       throw new WorkItemValidationError(`"description" must be at most ${MAX_TEXT} characters`);
+    }
+    if (patch.description !== null && patch.description.trim() !== "" && hasPlaceholder(patch.description)) {
+      throw new WorkItemValidationError(
+        `"description" still contains an unspecified marker. Ask the user and persist only a confirmed value.`
+      );
     }
     fields.push("description = ?");
     values.push(patch.description);
@@ -551,6 +578,14 @@ export function updateWorkItem(
 
   let statusChanged = false;
   if (patch.status !== undefined && patch.status !== current.status) {
+    if (patch.status === "ready" && current.kind === "story") {
+      const description = patch.description !== undefined ? patch.description : current.description;
+      if (!description || description.trim() === "") {
+        throw new WorkItemValidationError(
+          "A story cannot be marked ready without a description explaining the need"
+        );
+      }
+    }
     if (!canTransitionItem(current.status, patch.status)) {
       throw new WorkItemValidationError(
         `Illegal transition from '${current.status}' to '${patch.status}' for ${current.kind} ${current.id}. Allowed next states: ${LEGAL_ITEM_TRANSITIONS[current.status].join(", ")}.`
@@ -614,8 +649,80 @@ export function updateWorkItem(
   return updated;
 }
 
-export function discardWorkItem(
-  id: string,
+export interface PromoteIdeaInput {
+  ideaId: string;
+  epicId: string;
+  title?: string;
+  description?: string;
+  actor?: string;
+}
+
+/**
+ * Turns a captured idea into a story, keeping the original words as provenance.
+ *
+ * The domain refuses to promote an idea while its description is missing or
+ * still contains a placeholder: the user must answer first.
+ */
+export function promoteIdeaToStory(
+  input: PromoteIdeaInput,
+  db: Database = getDatabase()
+): WorkItem {
+  const idea = getWorkItem(input.ideaId, db);
+  if (!idea) throw new WorkItemValidationError(`Work item not found with ID: ${input.ideaId}`);
+  if (idea.kind !== "idea") {
+    throw new WorkItemValidationError(`Work item ${input.ideaId} is a ${idea.kind}, not an idea`);
+  }
+  if (idea.status === "discarded") {
+    throw new WorkItemValidationError(`Idea ${input.ideaId} was discarded`);
+  }
+
+  const epic = getWorkItem(input.epicId, db);
+  if (!epic || epic.kind !== "epic") {
+    throw new WorkItemValidationError(`Epic not found with ID: ${input.epicId}`);
+  }
+  if (epic.project_id !== idea.project_id) {
+    throw new WorkItemValidationError("The idea and the epic belong to different projects");
+  }
+
+  const title = input.title ?? idea.title;
+  const description = input.description ?? idea.description ?? idea.original_text;
+  if (!description || description.trim() === "") {
+    throw new WorkItemValidationError(
+      "Promoting an idea to a story requires a confirmed description. Ask the user first."
+    );
+  }
+
+  const actor = input.actor || LOCAL_ACTOR;
+  const story = createWorkItem(
+    {
+      projectId: idea.project_id,
+      kind: "story",
+      title,
+      originalText: idea.original_text,
+      description,
+      parentId: epic.id,
+      status: "draft",
+      actor,
+    },
+    db
+  );
+
+  appendChange(
+    {
+      projectId: idea.project_id,
+      entityType: "work_item",
+      entityId: idea.id,
+      action: "idea.promoted",
+      actor,
+      payload: { storyId: story.id, storyCode: story.code },
+    },
+    db
+  );
+
+  return story;
+}
+
+export function discardWorkItem(  id: string,
   expectedVersion: number,
   reason: string,
   actor: string = LOCAL_ACTOR,

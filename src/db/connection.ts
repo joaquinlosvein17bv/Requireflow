@@ -7,7 +7,7 @@ import { runMigrations } from "./migrations.ts";
 const databases = new Map<string, Database>();
 
 /** Highest schema version this build understands. */
-export const V2_SCHEMA_VERSION = 6;
+export const V2_SCHEMA_VERSION = 7;
 
 /** The historical, never-auto-migrated RequireFlow 1 database. */
 export function legacyDbPath(): string {

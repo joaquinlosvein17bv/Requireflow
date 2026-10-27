@@ -352,6 +352,197 @@ function migratePlanningCore(db: Database): void {
   );
 }
 
+/**
+ * Groups (increments), membership with history, dependencies, confirmed
+ * decisions, stable acceptance criteria, approved scope snapshots and the human
+ * review loop.
+ *
+ * Additive only. `tasks`, `task_cycles` and `history` keep their meaning.
+ */
+function migrateGroupsAndReviews(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS increments (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT,
+      goal TEXT,
+      status TEXT NOT NULL DEFAULT 'planificado'
+        CHECK (status IN ('planificado', 'en_refinamiento', 'listo_para_aprobacion',
+                          'aprobado', 'en_implementacion', 'pendiente_revision_humana',
+                          'en_correcciones', 'aceptado', 'bloqueado')),
+      position INTEGER NOT NULL DEFAULT 0,
+      exclusiones TEXT,
+      scope_hash TEXT,
+      approved_scope_hash TEXT,
+      approved_revision INTEGER NOT NULL DEFAULT 0,
+      approved_at TEXT,
+      approved_by TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+  `);
+  db.run(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_increments_code ON increments(project_id, code)"
+  );
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_increments_project_position ON increments(project_id, position)"
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS increment_stories (
+      id TEXT PRIMARY KEY,
+      increment_id TEXT NOT NULL,
+      work_item_id TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      added_at TEXT NOT NULL,
+      removed_at TEXT,
+      FOREIGN KEY(increment_id) REFERENCES increments(id) ON DELETE CASCADE,
+      FOREIGN KEY(work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT
+    );
+  `);
+  db.run(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_increment_stories_active ON increment_stories(increment_id, work_item_id) WHERE removed_at IS NULL"
+  );
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_increment_stories_item ON increment_stories(work_item_id)"
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS increment_dependencies (
+      increment_id TEXT NOT NULL,
+      depends_on_increment_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (increment_id, depends_on_increment_id),
+      FOREIGN KEY(increment_id) REFERENCES increments(id) ON DELETE CASCADE,
+      FOREIGN KEY(depends_on_increment_id) REFERENCES increments(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS decisions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      increment_id TEXT,
+      work_item_id TEXT,
+      code TEXT NOT NULL,
+      title TEXT NOT NULL,
+      question TEXT NOT NULL,
+      answer TEXT NOT NULL,
+      alternatives TEXT,
+      impact TEXT,
+      status TEXT NOT NULL DEFAULT 'accepted'
+        CHECK (status IN ('accepted', 'superseded')),
+      superseded_by TEXT,
+      actor TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY(increment_id) REFERENCES increments(id) ON DELETE SET NULL,
+      FOREIGN KEY(work_item_id) REFERENCES work_items(id) ON DELETE SET NULL
+    );
+  `);
+  db.run(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_decisions_code ON decisions(project_id, code)"
+  );
+  db.run("CREATE INDEX IF NOT EXISTS idx_decisions_increment ON decisions(increment_id)");
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS acceptance_criteria (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      increment_id TEXT NOT NULL,
+      code TEXT NOT NULL,
+      text TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'superseded', 'retired')),
+      superseded_by TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY(increment_id) REFERENCES increments(id) ON DELETE CASCADE
+    );
+  `);
+  db.run(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_ac_code ON acceptance_criteria(project_id, code)"
+  );
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_ac_increment ON acceptance_criteria(increment_id, position)"
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS increment_revisions (
+      id TEXT PRIMARY KEY,
+      increment_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      scope_hash TEXT NOT NULL,
+      snapshot TEXT NOT NULL,
+      approved_at TEXT NOT NULL,
+      approved_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(increment_id, revision),
+      FOREIGN KEY(increment_id) REFERENCES increments(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS increment_reviews (
+      id TEXT PRIMARY KEY,
+      increment_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      cycle INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'changes_requested', 'accepted')),
+      evidence TEXT,
+      requested_at TEXT NOT NULL,
+      requested_by TEXT NOT NULL,
+      decided_at TEXT,
+      decided_by TEXT,
+      notes TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(increment_id, cycle),
+      FOREIGN KEY(increment_id) REFERENCES increments(id) ON DELETE CASCADE
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS review_findings (
+      id TEXT PRIMARY KEY,
+      review_id TEXT NOT NULL,
+      acceptance_criterion_id TEXT,
+      kind TEXT NOT NULL DEFAULT 'defect' CHECK (kind IN ('defect', 'observation')),
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      FOREIGN KEY(review_id) REFERENCES increment_reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY(acceptance_criterion_id) REFERENCES acceptance_criteria(id) ON DELETE SET NULL
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS review_results (
+      id TEXT PRIMARY KEY,
+      review_id TEXT NOT NULL,
+      acceptance_criterion_id TEXT NOT NULL,
+      result TEXT NOT NULL CHECK (result IN ('pass', 'fail')),
+      evidence TEXT,
+      actor TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(review_id) REFERENCES increment_reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY(acceptance_criterion_id) REFERENCES acceptance_criteria(id) ON DELETE CASCADE
+    );
+  `);
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_review_results_review ON review_results(review_id)"
+  );
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -382,6 +573,11 @@ export const MIGRATIONS: Migration[] = [
     version: 6,
     name: "planning_core_and_project_mode",
     run: migratePlanningCore,
+  },
+  {
+    version: 7,
+    name: "groups_criteria_reviews_and_scope_snapshots",
+    run: migrateGroupsAndReviews,
   },
 ];
 
