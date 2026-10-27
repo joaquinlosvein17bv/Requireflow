@@ -9,6 +9,9 @@ const state = {
   activeSectionFilter: null,
   kanbanData: { todo: [], in_progress: [], done: [] },
   ideas: { projectId: null, ideas: [], epics: [], stories: [], ungrouped: [] },
+  groups: [],
+  selectedGroupId: null,
+  epics: [],
   backlogTasks: [],
   historyData: { items: [], total: 0, page: 1, limit: 20 },
   metrics: null,
@@ -280,6 +283,7 @@ const state = {
         const titles = {
           kanban: "Tablero Kanban",
           ideas: "Ideas",
+          groups: "Grupos de experiencia",
           backlog: "Backlog & Secciones",
           history: "Historial Permanente",
           metrics: "Eficiencia & Métricas",
@@ -312,6 +316,9 @@ const state = {
         break;
       case "ideas":
         await loadIdeas();
+        break;
+      case "groups":
+        await loadGroups();
         break;
       case "backlog":
         await loadBacklog();
@@ -409,6 +416,314 @@ const state = {
       } catch {
         // fetchAPI already surfaced the error.
       }
+    });
+  }
+
+  // --- 1c. Product groups ---
+  async function loadGroups() {
+    if (!state.currentProject) return;
+    const [groups, planning] = await Promise.all([
+      fetchAPI(`/api/projects/${state.currentProject.id}/groups`),
+      fetchAPI(`/api/projects/${state.currentProject.id}/planning`),
+    ]);
+    state.groups = groups;
+    state.epics = planning.epics ?? [];
+
+    if (
+      state.selectedGroupId === null ||
+      !state.groups.some((view) => view.increment.id === state.selectedGroupId)
+    ) {
+      state.selectedGroupId = state.groups[0]?.increment.id ?? null;
+    }
+
+    renderGroups();
+    renderEpics();
+    renderGroupDetail();
+  }
+
+  function renderGroups() {
+    const list = document.getElementById("groupsList");
+    if (!list) return;
+    list.innerHTML = "";
+
+    if (state.groups.length === 0) {
+      list.append(
+        createEl("div", {
+          class: "empty-state",
+          text: "No hay grupos todavía. La skill de product-backlog los propone y los guarda.",
+        })
+      );
+      return;
+    }
+
+    for (const view of state.groups) {
+      const group = view.increment;
+      const button = createEl("button", {
+        class: `group-item ${state.selectedGroupId === group.id ? "active" : ""}`,
+        dataset: { id: group.id },
+      });
+      button.append(
+        createEl("div", { class: "group-item-head" }, [
+          createEl("span", { class: "group-code", text: group.code }),
+          createEl("span", { class: `badge group-status group-status-${group.status}`, text: group.status }),
+          view.drifted ? createEl("span", { class: "group-drift", text: "⚠ drift" }) : document.createTextNode(""),
+        ]),
+        createEl("div", { class: "group-item-name", text: group.name || group.goal || "(sin nombre)" }),
+        createEl("div", {
+          class: "group-item-meta",
+          text: `${view.stories.length} historias · ${view.acceptanceCriteria.length} AC · ${view.nextAction}`,
+        })
+      );
+      button.addEventListener("click", () => {
+        state.selectedGroupId = group.id;
+        renderGroups();
+        renderGroupDetail();
+      });
+      list.append(button);
+    }
+  }
+
+  function renderEpics() {
+    const list = document.getElementById("epicsList");
+    if (!list) return;
+    list.innerHTML = "";
+
+    if (!state.epics || state.epics.length === 0) {
+      list.append(createEl("div", { class: "empty-state", text: "Todavía no hay épicas." }));
+      return;
+    }
+
+    for (const epic of state.epics) {
+      const card = createEl("div", { class: "epic-card" });
+      card.append(
+        createEl("div", { class: "group-item-head" }, [
+          createEl("span", { class: "group-code", text: epic.code || "E??" }),
+          createEl("span", { class: "badge", text: epic.status }),
+        ]),
+        createEl("div", { class: "group-item-name", text: epic.title })
+      );
+      for (const story of epic.stories) {
+        card.append(
+          createEl("div", { class: "epic-story" }, [
+            createEl("span", { class: "group-code", text: story.code || "H???" }),
+            document.createTextNode(` ${story.title} `),
+            createEl("span", { class: "badge", text: story.status }),
+          ])
+        );
+      }
+      list.append(card);
+    }
+  }
+
+  function renderGroupDetail() {
+    const detail = document.getElementById("groupDetail");
+    if (!detail) return;
+    detail.innerHTML = "";
+
+    const view = state.groups.find((entry) => entry.increment.id === state.selectedGroupId);
+    if (!view) {
+      detail.append(
+        createEl("div", { class: "empty-state", text: "Seleccioná un grupo para ver su alcance." })
+      );
+      return;
+    }
+
+    const group = view.increment;
+    const head = createEl("div", { class: "group-detail-head" });
+    head.append(
+      createEl("h2", { text: `${group.code} — ${group.name || "(sin nombre)"}` }),
+      createEl("div", { class: "group-item-head" }, [
+        createEl("span", { class: `badge group-status group-status-${group.status}`, text: group.status }),
+        createEl("span", { class: "badge", text: `revisión ${group.approved_revision}` }),
+        view.drifted ? createEl("span", { class: "group-drift", text: "⚠ alcance cambiado" }) : document.createTextNode(""),
+      ]),
+      createEl("p", { class: "group-goal", text: group.goal || "Sin objetivo definido" })
+    );
+    detail.append(head);
+
+    if (!view.readiness.ready) {
+      const blockers = createEl("div", { class: "group-blockers" });
+      blockers.append(createEl("h3", { text: "Bloqueos de refinamiento" }));
+      for (const blocker of view.readiness.blockers) {
+        blockers.append(createEl("div", { class: "blocker", text: `! ${blocker}` }));
+      }
+      detail.append(blockers);
+    }
+
+    const stories = createEl("section", { class: "group-section" });
+    stories.append(createEl("h3", { text: `Historias (${view.stories.length})` }));
+    for (const story of view.stories) {
+      stories.append(
+        createEl("div", { class: "group-row" }, [
+          createEl("span", { class: "group-code", text: story.code || "H???" }),
+          document.createTextNode(` ${story.title} `),
+          createEl("span", { class: "badge", text: story.status }),
+        ])
+      );
+    }
+    detail.append(stories);
+
+    const criteria = createEl("section", { class: "group-section" });
+    criteria.append(createEl("h3", { text: `Criterios de aceptación (${view.acceptanceCriteria.length})` }));
+    for (const criterion of view.acceptanceCriteria) {
+      criteria.append(
+        createEl("div", { class: "group-row" }, [
+          createEl("span", { class: "group-code", text: criterion.code }),
+          document.createTextNode(` ${criterion.text}`),
+        ])
+      );
+    }
+    detail.append(criteria);
+
+    const decisions = createEl("section", { class: "group-section" });
+    decisions.append(createEl("h3", { text: `Decisiones confirmadas (${view.decisions.length})` }));
+    for (const decision of view.decisions) {
+      decisions.append(
+        createEl("div", { class: "group-row" }, [
+          createEl("span", { class: "group-code", text: decision.code }),
+          createEl("strong", { text: ` ${decision.title}: ` }),
+          document.createTextNode(decision.answer),
+        ])
+      );
+    }
+    detail.append(decisions);
+
+    const actions = createEl("div", { class: "group-actions" });
+
+    if (group.status === "listo_para_aprobacion" || view.drifted) {
+      const approve = createEl("button", { class: "btn-primary", text: "Aprobar alcance" });
+      approve.addEventListener("click", () =>
+        askHumanConfirmation({
+          title: `Aprobar ${group.code}`,
+          message: `Vas a aprobar la revisión vigente de ${group.code} con ${view.stories.length} historias y ${view.acceptanceCriteria.length} criterios. La implementación no empieza hasta que ODD tome el grupo.`,
+          expected: `APROBAR ${group.code}`,
+          onConfirm: (phrase) =>
+            groupAction(group.id, "approve", {
+              expectedVersion: group.version,
+              confirm: phrase,
+            }),
+        })
+      );
+      actions.append(approve);
+    }
+
+    if (group.status === "aprobado" && !view.drifted) {
+      const start = createEl("button", { class: "btn-secondary", text: "Iniciar implementación" });
+      start.addEventListener("click", () => groupAction(group.id, "start", {}));
+      actions.append(start);
+    }
+
+    if (group.status === "pendiente_revision_humana") {
+      const accept = createEl("button", { class: "btn-primary", text: "Aceptar grupo" });
+      accept.addEventListener("click", () =>
+        askHumanConfirmation({
+          title: `Aceptar ${group.code}`,
+          message: "Confirmá que probaste el resultado y que los criterios se cumplen. Un test verde no es aceptación.",
+          expected: `ACEPTAR ${group.code}`,
+          onConfirm: (phrase) =>
+            groupAction(group.id, "accept", {
+              expectedVersion: group.version,
+              confirm: phrase,
+            }),
+        })
+      );
+      actions.append(accept);
+
+      const defectBox = createEl("div", { class: "group-defect" });
+      const defectInput = createEl("textarea", {
+        class: "form-textarea",
+        rows: "2",
+        placeholder: "Describí el defecto observado (qué criterio falla y cómo se reproduce)",
+      });
+      const reportButton = createEl("button", { class: "btn-danger", text: "Reportar defecto" });
+      reportButton.addEventListener("click", async () => {
+        const description = defectInput.value.trim();
+        if (description === "") {
+          showToast("Describí el defecto antes de reportarlo.", "error");
+          return;
+        }
+        await groupAction(group.id, "defects", { description });
+      });
+      defectBox.append(defectInput, reportButton);
+      actions.append(defectBox);
+    }
+
+    if (actions.childElementCount > 0) detail.append(actions);
+    if (group.status === "aprobado" || group.status === "en_implementacion") {
+      detail.append(
+        createEl("p", {
+          class: "group-hint",
+          text: "ODD puede leer este alcance directamente: «Revisa RequireFlow y continúa con " + group.code + "».",
+        })
+      );
+    }
+  }
+
+  let pendingConfirmation = null;
+
+  function askHumanConfirmation({ title, message, expected, onConfirm }) {
+    pendingConfirmation = { expected, onConfirm };
+    const modal = document.getElementById("modalConfirm");
+    const titleEl = document.getElementById("confirmTitle");
+    const messageEl = document.getElementById("confirmMessage");
+    const expectedEl = document.getElementById("confirmExpected");
+    const input = document.getElementById("confirmPhraseInput");
+
+    if (titleEl) titleEl.textContent = title;
+    if (messageEl) messageEl.textContent = message;
+    if (expectedEl) expectedEl.textContent = expected;
+    if (input) input.value = "";
+    modal?.classList.add("active");
+    input?.focus();
+  }
+
+  async function groupAction(groupId, action, body) {
+    try {
+      await fetchAPI(`/api/groups/${groupId}/${action}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      showToast("Acción registrada.", "success");
+      await loadGroups();
+    } catch {
+      // fetchAPI already surfaced the error.
+    }
+  }
+
+  function initGroupView() {
+    const byGroup = document.getElementById("btnViewByGroup");
+    const byEpic = document.getElementById("btnViewByEpic");
+    const groupsList = document.getElementById("groupsList");
+    const epicsList = document.getElementById("epicsList");
+
+    const show = (which) => {
+      const isGroup = which === "group";
+      groupsList?.toggleAttribute("hidden", !isGroup);
+      epicsList?.toggleAttribute("hidden", isGroup);
+      byGroup?.classList.toggle("active", isGroup);
+      byEpic?.classList.toggle("active", !isGroup);
+      const detail = document.getElementById("groupDetail");
+      detail?.toggleAttribute("hidden", !isGroup);
+    };
+
+    byGroup?.addEventListener("click", () => show("group"));
+    byEpic?.addEventListener("click", () => show("epic"));
+  }
+
+  function initConfirmModal() {
+    const button = document.getElementById("btnConfirmAction");
+    const input = document.getElementById("confirmPhraseInput");
+    button?.addEventListener("click", async () => {
+      if (!pendingConfirmation) return;
+      const typed = (input?.value ?? "").trim();
+      if (typed !== pendingConfirmation.expected) {
+        showToast(`Escribí exactamente: ${pendingConfirmation.expected}`, "error");
+        return;
+      }
+      const action = pendingConfirmation;
+      pendingConfirmation = null;
+      document.getElementById("modalConfirm")?.classList.remove("active");
+      await action.onConfirm(typed);
     });
   }
 
@@ -1053,6 +1368,8 @@ const state = {
     initArchiveButton();
     initSearchInputs();
     initIdeaCapture();
+    initGroupView();
+    initConfirmModal();
     initLiveTimers();
     await loadProjects();
   });

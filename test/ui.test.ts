@@ -115,3 +115,30 @@ describe("Ideas view (fast capture)", () => {
     expect(source).not.toMatch(/innerHTML\s*=\s*[^;]*idea\./);
   });
 });
+
+describe("Groups view (human flow)", () => {
+  const UI_DIR = path.resolve(import.meta.dir, "..", "src", "ui");
+
+  it("ships the groups tab, both views and the human confirmation modal", () => {
+    const html = fs.readFileSync(path.join(UI_DIR, "index.html"), "utf8");
+
+    expect(html).toContain('data-tab="groups"');
+    expect(html).toContain('id="viewGroups"');
+    expect(html).toContain('id="groupsList"');
+    expect(html).toContain('id="epicsList"');
+    expect(html).toContain('id="groupDetail"');
+    expect(html).toContain('id="modalConfirm"');
+    expect(html).toContain('id="confirmPhraseInput"');
+  });
+
+  it("renders group data through safe nodes and requires a typed phrase", () => {
+    const source = fs.readFileSync(path.join(UI_DIR, "app.js"), "utf8");
+
+    expect(source).toContain("async function loadGroups");
+    expect(source).toContain("function renderGroupDetail");
+    expect(source).toContain("function askHumanConfirmation");
+    expect(source).toContain("APROBAR ${group.code}");
+    expect(source).toContain("ACEPTAR ${group.code}");
+    expect(source).not.toMatch(/innerHTML\s*=\s*[^;]*group\./);
+  });
+});

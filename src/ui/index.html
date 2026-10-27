@@ -40,6 +40,10 @@
           <span class="nav-icon">💡</span>
           <span class="nav-label">Ideas</span>
         </button>
+        <button class="nav-item" data-tab="groups">
+          <span class="nav-icon">🧩</span>
+          <span class="nav-label">Grupos G01…</span>
+        </button>
         <button class="nav-item" data-tab="backlog">
           <span class="nav-icon">📝</span>
           <span class="nav-label">Backlog & Secciones</span>
@@ -148,7 +152,24 @@
           </div>
         </section>
 
-        <!-- 3. Backlog View -->
+        <!-- 3. Groups View -->
+        <section id="viewGroups" class="view-panel">
+          <div class="groups-layout">
+            <aside class="groups-sidebar">
+              <div class="groups-toolbar">
+                <button id="btnViewByGroup" class="btn-secondary btn-sm active">Por grupo</button>
+                <button id="btnViewByEpic" class="btn-secondary btn-sm">Por épica</button>
+              </div>
+              <div id="groupsList" class="groups-list"></div>
+              <div id="epicsList" class="groups-list" hidden></div>
+            </aside>
+            <div id="groupDetail" class="group-detail">
+              <div class="empty-state">Seleccioná un grupo para ver su alcance.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 4. Backlog View -->
         <section id="viewBacklog" class="view-panel">
           <div class="backlog-container">
             <div class="backlog-toolbar">
@@ -161,7 +182,7 @@
           </div>
         </section>
 
-        <!-- 4. History View -->
+        <!-- 5. History View -->
         <section id="viewHistory" class="view-panel">
           <div class="history-container">
             <div class="history-toolbar">
@@ -195,7 +216,7 @@
           </div>
         </section>
 
-        <!-- 5. Efficiency & Metrics View -->
+        <!-- 6. Efficiency & Metrics View -->
         <section id="viewMetrics" class="view-panel">
           <div class="metrics-container">
             <!-- KPI Cards -->
@@ -240,7 +261,7 @@
           </div>
         </section>
 
-        <!-- 6. Projects Manager View -->
+        <!-- 7. Projects Manager View -->
         <section id="viewProjects" class="view-panel">
           <div class="projects-manager-container">
             <div class="projects-manager-header">
@@ -390,6 +411,27 @@
           <button type="submit" class="btn-primary">Registrar Proyecto</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Modal: Human confirmation (approve / accept) -->
+  <div id="modalConfirm" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 id="confirmTitle">Confirmación humana</h3>
+        <button class="modal-close" data-close-modal="modalConfirm">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="confirmMessage" class="modal-notice"></p>
+        <div class="form-group">
+          <label for="confirmPhraseInput">Escribí exactamente: <code id="confirmExpected"></code></label>
+          <input type="text" id="confirmPhraseInput" class="form-input" autocomplete="off">
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" data-close-modal="modalConfirm">Cancelar</button>
+          <button type="button" id="btnConfirmAction" class="btn-primary">Confirmar</button>
+        </div>
+      </div>
     </div>
   </div>
 
