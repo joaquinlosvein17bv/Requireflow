@@ -18,7 +18,7 @@ import {
 import {
   createTask,
   listTasks,
-  getNextTask,
+  getNextTaskDecision,
   startTask,
   completeTask,
   updateTask,
@@ -31,9 +31,30 @@ import { searchHistory } from "../domain/history.ts";
 import { calculateProjectMetrics } from "../domain/efficiency.ts";
 import {
   createIdea,
+  createWorkItem,
   getBacklogTree,
+  promoteIdeaToStory,
+  updateWorkItem,
   WorkItemConflictError,
 } from "../domain/backlog/work-item.ts";
+import {
+  addAcceptanceCriterion,
+  recordDecision,
+} from "../domain/backlog/criteria.ts";
+import {
+  getIncrementView,
+  listIncrements,
+  nextIncrement,
+  proposeGroups,
+  refineIncrement,
+  resolveIncrement,
+} from "../domain/backlog/increment.ts";
+import {
+  deliverCorrection,
+  reportDefect,
+  startImplementation,
+  submitImplementationEvidence,
+} from "../domain/backlog/review.ts";
 
 /**
  * Resolves the project a tool call targets.
@@ -300,6 +321,466 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
       )
   );
 
+  // 1h. rf_work_item_create / work_item_create
+  registerDual(
+    "rf_work_item_create",
+    "work_item_create",
+    "Create an epic or a story. Stories need an epic of the same project and a confirmed description",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          kind: z.enum(["epic", "story"]),
+          title: z.string().min(1),
+          projectId: z.string().optional(),
+          description: z.string().optional().describe("Confirmed description; placeholders are rejected"),
+          parentId: z.string().optional().describe("Epic ID for stories"),
+          priority: z.enum(["low", "medium", "high", "blocker"]).optional(),
+          status: z.enum(["captured", "draft", "refined", "ready", "discarded"]).optional(),
+        },
+        (args) =>
+          runTool("rf_work_item_create", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            return createWorkItem(
+              {
+                projectId: pId,
+                kind: args.kind,
+                title: args.title,
+                description: args.description,
+                parentId: args.parentId,
+                priority: args.priority,
+                status: args.status,
+                actor: "agent:mcp",
+              },
+              db
+            );
+          })
+      )
+  );
+
+  // 1i. rf_work_item_update / work_item_update
+  registerDual(
+    "rf_work_item_update",
+    "work_item_update",
+    "Refine a story or epic with optimistic concurrency: expectedVersion is required and a stale version conflicts",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          id: z.string().min(1),
+          expectedVersion: z.number().int().positive(),
+          title: z.string().optional(),
+          description: z.string().optional(),
+          status: z.enum(["captured", "draft", "refined", "ready", "discarded"]).optional(),
+          definition: z.enum(["clear", "partial", "unspecified", "deferred", "delegated"]).optional(),
+          priority: z.enum(["low", "medium", "high", "blocker"]).optional(),
+          parentId: z.string().nullable().optional(),
+        },
+        (args) =>
+          runTool("rf_work_item_update", () =>
+            updateWorkItem(
+              args.id,
+              args.expectedVersion,
+              {
+                title: args.title,
+                description: args.description,
+                status: args.status,
+                definition: args.definition,
+                priority: args.priority,
+                parentId: args.parentId,
+              },
+              "agent:mcp",
+              db
+            )
+          )
+      )
+  );
+
+  // 1j. rf_group_list / group_list
+  registerDual(
+    "rf_group_list",
+    "group_list",
+    "List the product groups (G01, G02, ...) with status, revision, drift and next action",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          projectId: z.string().optional().describe("Project ID (defaults to current project)"),
+        },
+        (args) =>
+          runTool("rf_group_list", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            return listIncrements(pId, db).map((group) => {
+              const view = getIncrementView(group.id, db);
+              return {
+                id: group.id,
+                code: group.code,
+                name: group.name,
+                status: group.status,
+                position: group.position,
+                version: group.version,
+                stories: view.stories.length,
+                criteria: view.acceptanceCriteria.length,
+                approvedRevision: group.approved_revision,
+                drifted: view.drifted,
+                canExecute: view.canExecute,
+                nextAction: view.nextAction,
+              };
+            });
+          })
+      )
+  );
+
+  // 1i. rf_group_get / group_get
+  registerDual(
+    "rf_group_get",
+    "group_get",
+    "Read the canonical view of a group: goal, stories, dependencies, confirmed decisions, acceptance criteria, approval revision, drift and next action. Use this to start work on G01 directly",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          group: z.string().min(1).describe("Group code (G01) or ID"),
+          projectId: z.string().optional().describe("Project ID (defaults to current project)"),
+        },
+        (args) =>
+          runTool("rf_group_get", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const group = resolveIncrement(pId, args.group, db);
+            if (!group) throw new Error(`Group not found: ${args.group}`);
+            const view = getIncrementView(group.id, db);
+            return {
+              ...view,
+              exclusiones: group.exclusiones,
+              approvedRevision: group.approved_revision,
+              approvedAt: group.approved_at,
+              approvedBy: group.approved_by,
+            };
+          })
+      )
+  );
+
+  // 1j. rf_group_next / group_next
+  registerDual(
+    "rf_group_next",
+    "group_next",
+    "Return the next group that still needs work, with its blocking reasons. Never skips a group waiting for human review",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          projectId: z.string().optional().describe("Project ID (defaults to current project)"),
+        },
+        (args) =>
+          runTool("rf_group_next", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const next = nextIncrement(pId, db);
+            if (!next) return { group: null, message: "All groups are accepted" };
+            return {
+              group: getIncrementView(next.increment.id, db),
+              blocked: next.blocked,
+              blockers: next.blockers,
+            };
+          })
+      )
+  );
+
+  // 1k. rf_group_propose / group_propose
+  registerDual(
+    "rf_group_propose",
+    "group_propose",
+    "Persist a whole set of proposed experience groups atomically. The proposal comes from the product analysis, never from a fixed rule",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          projectId: z.string().optional().describe("Project ID (defaults to current project)"),
+          groups: z
+            .array(
+              z.object({
+                code: z.string().describe("G01, G02, ..."),
+                name: z.string().optional(),
+                goal: z.string().optional().describe("Confirmed goal; no placeholders"),
+                exclusiones: z.string().optional(),
+                storyIds: z.array(z.string()).optional(),
+                acceptanceCriteria: z.array(z.string()).optional().describe("Confirmed criteria"),
+                dependsOn: z.array(z.string()).optional().describe("Group codes"),
+              })
+            )
+            .min(1),
+        },
+        (args) =>
+          runTool("rf_group_propose", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            return proposeGroups(pId, args.groups, "agent:mcp", db);
+          })
+      )
+  );
+
+  // 1l. rf_group_refine / group_refine
+  registerDual(
+    "rf_group_refine",
+    "group_refine",
+    "Refine a group in one versioned step: goal, stories to add or remove, dependencies. Refuses edits outside the planning stages",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          group: z.string().min(1).describe("Group code or ID"),
+          expectedVersion: z.number().int().positive().describe("Version read from rf_group_get"),
+          projectId: z.string().optional(),
+          name: z.string().optional(),
+          goal: z.string().optional(),
+          exclusiones: z.string().optional(),
+          addStoryIds: z.array(z.string()).optional(),
+          removeStoryIds: z.array(z.string()).optional(),
+          addDependencyCodes: z.array(z.string()).optional(),
+        },
+        (args) =>
+          runTool("rf_group_refine", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const group = resolveIncrement(pId, args.group, db);
+            if (!group) throw new Error(`Group not found: ${args.group}`);
+            return refineIncrement(
+              group.id,
+              args.expectedVersion,
+              {
+                name: args.name,
+                goal: args.goal,
+                exclusiones: args.exclusiones,
+                addStoryIds: args.addStoryIds,
+                removeStoryIds: args.removeStoryIds,
+                addDependencyCodes: args.addDependencyCodes,
+              },
+              "agent:mcp",
+              db
+            );
+          })
+      )
+  );
+
+  // 1m. rf_ac_add / ac_add
+  registerDual(
+    "rf_ac_add",
+    "ac_add",
+    "Add a confirmed acceptance criterion with a stable AC-<group>-### code",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          group: z.string().min(1).describe("Group code or ID"),
+          text: z.string().min(1).describe("Confirmed, observable criterion"),
+          projectId: z.string().optional(),
+        },
+        (args) =>
+          runTool("rf_ac_add", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const group = resolveIncrement(pId, args.group, db);
+            if (!group) throw new Error(`Group not found: ${args.group}`);
+            return addAcceptanceCriterion(
+              { incrementId: group.id, text: args.text, actor: "agent:mcp" },
+              db
+            );
+          })
+      )
+  );
+
+  // 1n. rf_decision_record / decision_record
+  registerDual(
+    "rf_decision_record",
+    "decision_record",
+    "Record a decision the user actually answered. Placeholders are rejected: ask first, then persist",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          title: z.string().min(1),
+          question: z.string().min(1).describe("The question that was asked"),
+          answer: z.string().min(1).describe("The user's confirmed answer"),
+          projectId: z.string().optional(),
+          group: z.string().optional().describe("Group code or ID the decision applies to"),
+          alternatives: z.string().optional(),
+          impact: z.string().optional(),
+        },
+        (args) =>
+          runTool("rf_decision_record", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const group = args.group ? resolveIncrement(pId, args.group, db) : null;
+            if (args.group && !group) throw new Error(`Group not found: ${args.group}`);
+            return recordDecision(
+              {
+                projectId: pId,
+                incrementId: group?.id,
+                title: args.title,
+                question: args.question,
+                answer: args.answer,
+                alternatives: args.alternatives,
+                impact: args.impact,
+                actor: "agent:mcp",
+              },
+              db
+            );
+          })
+      )
+  );
+
+  // 1o. rf_idea_promote / idea_promote
+  registerDual(
+    "rf_idea_promote",
+    "idea_promote",
+    "Turn a captured idea into a story once its description is confirmed. Refuses placeholders",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          ideaId: z.string().min(1),
+          epicId: z.string().min(1),
+          title: z.string().optional(),
+          description: z.string().optional().describe("Confirmed description"),
+          projectId: z.string().optional(),
+        },
+        (args) =>
+          runTool("rf_idea_promote", () =>
+            promoteIdeaToStory(
+              {
+                ideaId: args.ideaId,
+                epicId: args.epicId,
+                title: args.title,
+                description: args.description,
+                actor: "agent:mcp",
+              },
+              db
+            )
+          )
+      )
+  );
+
+  // 1p. rf_group_start / group_start
+  registerDual(
+    "rf_group_start",
+    "group_start",
+    "Move an approved, non-drifted group into implementation",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          group: z.string().min(1),
+          projectId: z.string().optional(),
+        },
+        (args) =>
+          runTool("rf_group_start", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const group = resolveIncrement(pId, args.group, db);
+            if (!group) throw new Error(`Group not found: ${args.group}`);
+            return startImplementation(group.id, "agent:odd", db);
+          })
+      )
+  );
+
+  // 1q. rf_group_evidence / group_evidence
+  registerDual(
+    "rf_group_evidence",
+    "group_evidence",
+    "Report that implementation is technically complete and hand the group to human review. It never accepts the group",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          group: z.string().min(1),
+          evidence: z.string().min(1).describe("Checks run and observed results"),
+          notes: z.string().optional(),
+          projectId: z.string().optional(),
+        },
+        (args) =>
+          runTool("rf_group_evidence", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const group = resolveIncrement(pId, args.group, db);
+            if (!group) throw new Error(`Group not found: ${args.group}`);
+            return submitImplementationEvidence(
+              {
+                incrementId: group.id,
+                actor: "agent:odd",
+                evidence: args.evidence,
+                notes: args.notes,
+              },
+              db
+            );
+          })
+      )
+  );
+
+  // 1r. rf_group_defect / group_defect
+  registerDual(
+    "rf_group_defect",
+    "group_defect",
+    "Record a user-reported defect against a pending review and reopen the same group for correction",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          group: z.string().min(1),
+          description: z.string().min(1).describe("What the user observed"),
+          acceptanceCriterionCode: z.string().optional(),
+          projectId: z.string().optional(),
+        },
+        (args) =>
+          runTool("rf_group_defect", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const group = resolveIncrement(pId, args.group, db);
+            if (!group) throw new Error(`Group not found: ${args.group}`);
+            return reportDefect(
+              {
+                incrementId: group.id,
+                actor: "agent:mcp",
+                description: args.description,
+                acceptanceCriterionCode: args.acceptanceCriterionCode,
+              },
+              db
+            );
+          })
+      )
+  );
+
+  // 1s. rf_group_correction / group_correction
+  registerDual(
+    "rf_group_correction",
+    "group_correction",
+    "Deliver the correction for a defect and send the same group back to human review",
+    (name, description) =>
+      server.tool(
+        name,
+        description,
+        {
+          group: z.string().min(1),
+          evidence: z.string().min(1),
+          projectId: z.string().optional(),
+        },
+        (args) =>
+          runTool("rf_group_correction", () => {
+            const pId = resolveProjectId(args.projectId, db);
+            const group = resolveIncrement(pId, args.group, db);
+            if (!group) throw new Error(`Group not found: ${args.group}`);
+            return deliverCorrection(
+              { incrementId: group.id, actor: "agent:odd", evidence: args.evidence },
+              db
+            );
+          })
+      )
+  );
+
   // 2. rf_task_list / task_list
   registerDual(
     "rf_task_list",
@@ -358,8 +839,16 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
         (args) =>
           runTool("rf_task_next", () => {
             const pId = resolveProjectId(args.projectId, db);
-            const task = getNextTask(pId, args.sectionId, db);
-            return task || { message: "No pending tasks found in backlog/todo" };
+            const decision = getNextTaskDecision(pId, args.sectionId, db);
+            return {
+              nextTask: decision.nextTask,
+              blocked: decision.blocked,
+              message: decision.nextTask
+                ? null
+                : decision.blocked.length > 0
+                  ? "No eligible task: every candidate is blocked. Report the reasons; do not create work to bypass them."
+                  : "No pending tasks found in backlog/todo",
+            };
           })
       )
   );
@@ -390,6 +879,14 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
             .describe("Priority level"),
           storyPoints: z.number().optional().describe("Estimated story points"),
           tags: z.union([z.array(z.string()), z.string()]).optional().describe("Tags"),
+          workItemId: z
+            .string()
+            .optional()
+            .describe("Story ID this task implements. Required in product mode"),
+          oddTaskRef: z
+            .string()
+            .optional()
+            .describe("Optional ODD task reference (e.g. T2) for traceability"),
         },
         (args) =>
           runTool("rf_task_add", () => {
@@ -404,6 +901,8 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
                 priority: args.priority as TaskPriority,
                 storyPoints: args.storyPoints,
                 tags: args.tags,
+                workItemId: args.workItemId,
+                oddTaskRef: args.oddTaskRef,
               },
               db
             );

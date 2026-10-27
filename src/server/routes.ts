@@ -42,6 +42,7 @@ import { calculateProjectMetrics } from "../domain/efficiency.ts";
 import { listChanges } from "../domain/changelog.ts";
 import {
   createIdea,
+  createWorkItem,
   getBacklogTree,
   getWorkItem,
   updateWorkItem,
@@ -55,6 +56,34 @@ import {
   type WorkItemPriority,
   type WorkItemStatus,
 } from "../domain/backlog/work-item.ts";
+import { PlanValidationError } from "../domain/backlog/scope.ts";
+import {
+  addAcceptanceCriterion,
+  recordDecision,
+  retireAcceptanceCriterion,
+  supersedeAcceptanceCriterion,
+} from "../domain/backlog/criteria.ts";
+import {
+  approveIncrement,
+  getIncrement,
+  getIncrementView,
+  INCREMENT_STATUSES,
+  listIncrements,
+  nextIncrement,
+  proposeGroups,
+  refineIncrement,
+  type IncrementStatus,
+} from "../domain/backlog/increment.ts";
+import {
+  acceptIncrement,
+  deliverCorrection,
+  listFindings,
+  listReviewResults,
+  listReviews,
+  reportDefect,
+  startImplementation,
+  submitImplementationEvidence,
+} from "../domain/backlog/review.ts";
 
 /** An error whose message is safe to return to the client. */
 class HttpError extends Error {
@@ -301,6 +330,7 @@ export async function handleApiRoute(
             description: optionalText(body.description, "description", 2000) ?? undefined,
             rootPath: optionalText(body.rootPath, "rootPath", 4096) ?? undefined,
             archiveThresholdHours: optionalInt(body.archiveThresholdHours, "archiveThresholdHours", 0, 8760),
+            mode: optionalEnum(body.mode, "mode", ["legacy", "product"] as const),
           },
           db
         );
@@ -411,10 +441,34 @@ export async function handleApiRoute(
       return errorResponse("Method not allowed", 405);
     }
 
-    // --- Product planning tree (ideas, epics, stories) ---
+    // --- Product backlog tree (ideas, epics, stories) ---
     const planningMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/planning$/);
     if (planningMatch && method === "GET") {
       return jsonResponse(getBacklogTree(planningMatch, db));
+    }
+
+    // --- Create epics and stories ---
+    const workItemsMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/work-items$/);
+    if (workItemsMatch && method === "POST") {
+      const body = await readJsonBody(req);
+      const kind = optionalEnum(body.kind, "kind", ["epic", "story"] as const);
+      if (!kind) {
+        return errorResponse(`"kind" must be "epic" or "story"`, 422);
+      }
+      const created = createWorkItem(
+        {
+          projectId: workItemsMatch,
+          kind,
+          title: requireText(body.title, "title", 200),
+          description: optionalText(body.description, "description", 20_000) ?? undefined,
+          parentId: optionalText(body.parentId, "parentId", 200) ?? undefined,
+          priority: optionalEnum(body.priority, "priority", WORK_ITEM_PRIORITIES),
+          status: optionalEnum(body.status, "status", WORK_ITEM_STATUSES),
+          actor: actorFromRequest(req),
+        },
+        db
+      );
+      return jsonResponse(created, 201);
     }
 
     // --- Append-only change log ---
@@ -422,6 +476,40 @@ export async function handleApiRoute(
     if (changesMatch && method === "GET") {
       const limit = intParam(url, "limit", { min: 1, max: 500, fallback: 50 });
       return jsonResponse(listChanges(changesMatch, limit, db));
+    }
+
+    // --- Product groups (project scoped) ---
+    const groupsMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/groups$/);
+    if (groupsMatch) {
+      if (method === "GET") {
+        return jsonResponse(
+          listIncrements(groupsMatch, db).map((group) => getIncrementView(group.id, db))
+        );
+      }
+      if (method === "POST") {
+        const body = await readJsonBody(req);
+        if (!Array.isArray(body.groups) || body.groups.length === 0) {
+          return errorResponse(`"groups" must be a non-empty array`);
+        }
+        return jsonResponse(
+          proposeGroups(groupsMatch, body.groups as any, actorFromRequest(req), db),
+          201
+        );
+      }
+      return errorResponse("Method not allowed", 405);
+    }
+
+    const nextGroupMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/groups\/next$/);
+    if (nextGroupMatch && method === "GET") {
+      const next = nextIncrement(nextGroupMatch, db);
+      if (!next) {
+        return jsonResponse({ group: null, message: "All groups are accepted" });
+      }
+      return jsonResponse({
+        group: getIncrementView(next.increment.id, db),
+        blocked: next.blocked,
+        blockers: next.blockers,
+      });
     }
 
     const projectMatch = pathParam(path, /^\/api\/projects\/([^/]+)$/);
@@ -563,11 +651,233 @@ export async function handleApiRoute(
             storyPoints: optionalInt(body.storyPoints, "storyPoints", 0, 100),
             tags: optionalTags(body.tags),
             notes: optionalText(body.notes, "notes", 20_000) ?? undefined,
+            workItemId: optionalText(body.workItemId, "workItemId", 200) ?? undefined,
+            oddTaskRef: optionalText(body.oddTaskRef, "oddTaskRef", 200) ?? undefined,
           },
           db
         );
         return jsonResponse(created, 201);
       }
+    }
+
+    // --- Individual group ---
+    const groupAction = path.match(/^\/api\/groups\/([^/]+)\/([a-z]+)$/);
+    if (groupAction && method === "POST") {
+      const groupId = groupAction[1]!;
+      const action = groupAction[2]!;
+      const group = getIncrement(groupId, db);
+      if (!group) return errorResponse("Group not found", 404);
+      const body = await readJsonBody(req);
+
+      switch (action) {
+        case "approve": {
+          const expectedVersion = optionalInt(
+            body.expectedVersion,
+            "expectedVersion",
+            1,
+            Number.MAX_SAFE_INTEGER
+          );
+          if (expectedVersion === undefined) {
+            return errorResponse(`"expectedVersion" is required`);
+          }
+          const confirm = requireText(body.confirm, "confirm", 100);
+          if (confirm !== `APROBAR ${group.code}`) {
+            return errorResponse(`Confirmation must be exactly "APROBAR ${group.code}"`, 422);
+          }
+          return jsonResponse(
+            approveIncrement(group.id, { expectedVersion, actor: "human:ui" }, db)
+          );
+        }
+        case "accept": {
+          const expectedVersion = optionalInt(
+            body.expectedVersion,
+            "expectedVersion",
+            1,
+            Number.MAX_SAFE_INTEGER
+          );
+          if (expectedVersion === undefined) {
+            return errorResponse(`"expectedVersion" is required`);
+          }
+          const confirm = requireText(body.confirm, "confirm", 100);
+          if (confirm !== `ACEPTAR ${group.code}`) {
+            return errorResponse(`Confirmation must be exactly "ACEPTAR ${group.code}"`, 422);
+          }
+          const evidence = optionalText(body.evidence, "evidence", 20_000) ?? undefined;
+          return jsonResponse(
+            acceptIncrement(
+              { incrementId: group.id, actor: "human:ui", expectedVersion, evidence },
+              db
+            )
+          );
+        }
+        case "start":
+          return jsonResponse(startImplementation(group.id, actorFromRequest(req), db));
+        case "evidence": {
+          const evidence = requireText(body.evidence, "evidence", 20_000);
+          const notes = optionalText(body.notes, "notes", 20_000) ?? undefined;
+          return jsonResponse(
+            submitImplementationEvidence(
+              { incrementId: group.id, actor: "agent:odd", evidence, notes },
+              db
+            )
+          );
+        }
+        case "defects": {
+          const description = requireText(body.description, "description", 5_000);
+          const criterionCode =
+            optionalText(body.acceptanceCriterionCode, "acceptanceCriterionCode", 100) ?? undefined;
+          return jsonResponse(
+            reportDefect(
+              {
+                incrementId: group.id,
+                actor: actorFromRequest(req),
+                description,
+                acceptanceCriterionCode: criterionCode,
+              },
+              db
+            )
+          );
+        }
+        case "corrections": {
+          const evidence = requireText(body.evidence, "evidence", 20_000);
+          return jsonResponse(
+            deliverCorrection({ incrementId: group.id, actor: "agent:odd", evidence }, db)
+          );
+        }
+        case "criteria": {
+          const text = requireText(body.text, "text", 2_000);
+          return jsonResponse(
+            addAcceptanceCriterion(
+              { incrementId: group.id, text, actor: actorFromRequest(req) },
+              db
+            ),
+            201
+          );
+        }
+        case "decisions": {
+          const title = requireText(body.title, "title", 200);
+          const question = requireText(body.question, "question", 2_000);
+          const answer = requireText(body.answer, "answer", 5_000);
+          return jsonResponse(
+            recordDecision(
+              {
+                projectId: group.project_id,
+                incrementId: group.id,
+                title,
+                question,
+                answer,
+                actor: actorFromRequest(req),
+              },
+              db
+            ),
+            201
+          );
+        }
+        default:
+          return errorResponse(`Unknown group action: ${action}`, 404);
+      }
+    }
+
+    const groupMatch = pathParam(path, /^\/api\/groups\/([^/]+)$/);
+    if (groupMatch) {
+      const group = getIncrement(groupMatch, db);
+      if (!group) return errorResponse("Group not found", 404);
+
+      if (method === "GET") {
+        const view = getIncrementView(group.id, db);
+        const reviews = listReviews(group.id, db).map((review) => ({
+          ...review,
+          findings: listFindings(review.id, db),
+          results: listReviewResults(review.id, db),
+        }));
+        return jsonResponse({ ...view, reviews });
+      }
+
+      if (method === "PATCH") {
+        const body = await readJsonBody(req);
+        const expectedVersion = optionalInt(
+          body.expectedVersion,
+          "expectedVersion",
+          1,
+          Number.MAX_SAFE_INTEGER
+        );
+        if (expectedVersion === undefined) {
+          return errorResponse(`"expectedVersion" is required`);
+        }
+        return jsonResponse(
+          refineIncrement(
+            group.id,
+            expectedVersion,
+            {
+              name: body.name === undefined ? undefined : requireText(body.name, "name", 200),
+              goal: body.goal === undefined ? undefined : requireText(body.goal, "goal", 2_000),
+              exclusiones: optionalText(body.exclusiones, "exclusiones", 5_000),
+              addStoryIds: Array.isArray(body.addStoryIds)
+                ? (body.addStoryIds as string[])
+                : undefined,
+              removeStoryIds: Array.isArray(body.removeStoryIds)
+                ? (body.removeStoryIds as string[])
+                : undefined,
+              addDependencyCodes: Array.isArray(body.addDependencyCodes)
+                ? (body.addDependencyCodes as string[])
+                : undefined,
+              status:
+                body.status === undefined
+                  ? undefined
+                  : (optionalEnum(
+                      body.status,
+                      "status",
+                      INCREMENT_STATUSES
+                    ) as IncrementStatus),
+            },
+            actorFromRequest(req),
+            db
+          )
+        );
+      }
+
+      return errorResponse("Method not allowed", 405);
+    }
+
+    // --- Acceptance criteria lifecycle ---
+    const criterionMatch = pathParam(path, /^\/api\/criteria\/([^/]+)$/);
+    if (criterionMatch) {
+      const body = await readJsonBody(req);
+      const expectedVersion = optionalInt(
+        body.expectedVersion,
+        "expectedVersion",
+        1,
+        Number.MAX_SAFE_INTEGER
+      );
+      if (expectedVersion === undefined) {
+        return errorResponse(`"expectedVersion" is required`);
+      }
+
+      if (method === "PATCH") {
+        const text = requireText(body.text, "text", 2_000);
+        return jsonResponse(
+          supersedeAcceptanceCriterion(
+            criterionMatch,
+            expectedVersion,
+            text,
+            actorFromRequest(req),
+            db
+          )
+        );
+      }
+      if (method === "DELETE") {
+        const reason = requireText(body.reason, "reason", 1_000);
+        return jsonResponse(
+          retireAcceptanceCriterion(
+            criterionMatch,
+            expectedVersion,
+            reason,
+            actorFromRequest(req),
+            db
+          )
+        );
+      }
+      return errorResponse("Method not allowed", 405);
     }
 
     // --- Work items (planning layer) ---
@@ -781,6 +1091,9 @@ export async function handleApiRoute(
       return conflictResponse(err.message, err.current);
     }
     if (err instanceof WorkItemValidationError) {
+      return errorResponse(err.message, 422);
+    }
+    if (err instanceof PlanValidationError) {
       return errorResponse(err.message, 422);
     }
     if (err instanceof TaskValidationError) {

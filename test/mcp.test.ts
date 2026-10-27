@@ -82,11 +82,13 @@ describe("MCP Server & Tools", () => {
     });
     expect(addRes2.isError).toBeUndefined();
 
-    // 3. Next task should be the high priority bugfix
+    // 3. Next task should be the high priority bugfix; the contract now
+    //    returns the task plus the reasons why any candidate was skipped.
     const nextRes = await tools["rf_task_next"].handler({ projectId: project.id });
-    const nextTask = JSON.parse(nextRes.content[0].text);
-    expect(nextTask.id).toBe(task1.id);
-    expect(nextTask.title).toBe("Fix memory leak");
+    const nextDecision = JSON.parse(nextRes.content[0].text);
+    expect(nextDecision.nextTask.id).toBe(task1.id);
+    expect(nextDecision.nextTask.title).toBe("Fix memory leak");
+    expect(nextDecision.blocked).toEqual([]);
 
     // 4. Start task
     const startRes = await tools["rf_task_start"].handler({ id: task1.id });

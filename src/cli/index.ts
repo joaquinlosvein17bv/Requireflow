@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import path from "node:path";
+import fs from "node:fs";
 import {
   getDatabase,
   resolveDbPath,
@@ -18,6 +19,26 @@ import {
 } from "../domain/project.ts";
 import { listSections } from "../domain/section.ts";
 import { createIdea, getBacklogTree } from "../domain/backlog/work-item.ts";
+import {
+  addAcceptanceCriterion,
+  recordDecision,
+} from "../domain/backlog/criteria.ts";
+import {
+  approveIncrement,
+  getIncrementView,
+  listIncrements,
+  nextIncrement,
+  proposeGroups,
+  refineIncrement,
+  resolveIncrement,
+} from "../domain/backlog/increment.ts";
+import {
+  acceptIncrement,
+  deliverCorrection,
+  reportDefect,
+  startImplementation,
+  submitImplementationEvidence,
+} from "../domain/backlog/review.ts";
 import {
   createTask,
   listTasks,
@@ -503,6 +524,12 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
       break;
     }
 
+    case "group":
+    case "groups": {
+      await runGroupCommand(positionals, flags, db);
+      break;
+    }
+
     case "ui": {
       const port = flagToNumber(flags["port"], { min: 1, max: 65535, label: "--port" });
       const hostFlag = flags["host"];
@@ -558,6 +585,284 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
   }
 }
 
+function assertInteractiveHuman(action: string): void {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `${action} requires an interactive terminal. Run it yourself; agents must not approve or accept on your behalf.`
+    );
+  }
+}
+
+/**
+ * Product group operations.
+ *
+ * Approval and acceptance are only reachable from a TTY with the exact
+ * confirmation phrase. The MCP surface deliberately exposes no such tool.
+ */
+async function runGroupCommand(
+  positionals: string[],
+  flags: Record<string, string | boolean>,
+  db: Database
+): Promise<void> {
+  const project = resolveCurrentProject(process.cwd(), db);
+  const sub = (positionals[0] ?? "list").toLowerCase();
+  const json = flagToBoolean(flags["json"], false);
+
+  const str = (name: string): string | undefined => {
+    const value = flags[name];
+    return typeof value === "string" ? value : undefined;
+  };
+  const list = (name: string): string[] | undefined => {
+    const value = str(name);
+    if (!value) return undefined;
+    return value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  };
+  const requireGroup = (arg?: string) => {
+    if (!arg) throw new Error("Group code or ID is required");
+    const group = resolveIncrement(project.id, arg, db);
+    if (!group) throw new Error(`Group not found: ${arg}`);
+    return group;
+  };
+
+  switch (sub) {
+    case "list": {
+      const views = listIncrements(project.id, db).map((group) =>
+        getIncrementView(group.id, db)
+      );
+      if (json) {
+        console.log(JSON.stringify(views, null, 2));
+        break;
+      }
+      console.log(`\n=== Groups: ${project.name} (${project.mode}) ===`);
+      if (views.length === 0) {
+        console.log("No groups yet. Propose them with: requireflow group propose --file groups.json");
+      }
+      for (const view of views) {
+        const group = view.increment;
+        const drift = view.drifted ? " ⚠ drift" : "";
+        console.log(
+          `  ${group.code} [${group.status}]${drift} rev=${group.approved_revision} · ${view.stories.length} stories · ${view.acceptanceCriteria.length} AC · next: ${view.nextAction}`
+        );
+      }
+      console.log("");
+      break;
+    }
+
+    case "show": {
+      const group = requireGroup(positionals[1]);
+      const view = getIncrementView(group.id, db);
+      if (json) {
+        console.log(JSON.stringify(view, null, 2));
+        break;
+      }
+      console.log(`\n=== ${group.code} — ${group.name ?? "(sin nombre)"} [${group.status}] ===`);
+      console.log(`Objective: ${group.goal ?? "—"}`);
+      console.log(`Revision:  ${group.approved_revision} · drifted: ${view.drifted ? "yes" : "no"} · executable: ${view.canExecute ? "yes" : "no"}`);
+      console.log(`Ready:     ${view.readiness.ready ? "yes" : "no"}`);
+      for (const blocker of view.readiness.blockers) console.log(`  ! ${blocker}`);
+      console.log(`\nStories (${view.stories.length}):`);
+      for (const story of view.stories) {
+        console.log(`  ${story.code ?? "H???"} [${story.status}] ${story.title}`);
+      }
+      console.log(`\nCriteria (${view.acceptanceCriteria.length}):`);
+      for (const criterion of view.acceptanceCriteria) {
+        console.log(`  ${criterion.code} ${criterion.text}`);
+      }
+      console.log(`\nDecisions (${view.decisions.length}):`);
+      for (const decision of view.decisions) {
+        console.log(`  ${decision.code} ${decision.title}: ${decision.answer}`);
+      }
+      console.log("");
+      break;
+    }
+
+    case "next": {
+      const next = nextIncrement(project.id, db);
+      if (!next) {
+        console.log("All groups are accepted.");
+        break;
+      }
+      const view = getIncrementView(next.increment.id, db);
+      if (json) {
+        console.log(JSON.stringify({ ...view, blocked: next.blocked, blockers: next.blockers }, null, 2));
+        break;
+      }
+      console.log(`${next.increment.code} [${next.increment.status}] next: ${view.nextAction}`);
+      if (next.blocked) {
+        for (const blocker of next.blockers) console.log(`  ! ${blocker}`);
+      }
+      break;
+    }
+
+    case "propose": {
+      const file = str("file");
+      if (!file) throw new Error("Usage: requireflow group propose --file <groups.json>");
+      const parsed = JSON.parse(fs.readFileSync(path.resolve(file), "utf8"));
+      const groups = Array.isArray(parsed) ? parsed : parsed.groups;
+      if (!Array.isArray(groups) || groups.length === 0) {
+        throw new Error('The proposal file must contain a non-empty array, or { "groups": [...] }');
+      }
+      const result = proposeGroups(project.id, groups, "user:cli", db);
+      if (json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(
+          `✓ Proposed ${result.created.length} group(s)${result.skipped.length ? `, skipped ${result.skipped.join(", ")}` : ""}`
+        );
+        for (const group of result.created) console.log(`  ${group.code} — ${group.goal ?? ""}`);
+      }
+      break;
+    }
+
+    case "refine": {
+      const group = requireGroup(positionals[1]);
+      const expected = Number(str("version") ?? group.version);
+      const updated = refineIncrement(
+        group.id,
+        expected,
+        {
+          name: str("name"),
+          goal: str("goal"),
+          exclusiones: str("exclude"),
+          addStoryIds: list("add-story"),
+          removeStoryIds: list("remove-story"),
+          addDependencyCodes: list("depends"),
+        },
+        "user:cli",
+        db
+      );
+      console.log(`✓ ${updated.code} refined (version ${updated.version})`);
+      break;
+    }
+
+    case "ac": {
+      const group = requireGroup(positionals[1]);
+      const text = positionals.slice(2).join(" ").trim() || str("text");
+      if (!text) throw new Error('Usage: requireflow group ac G01 "criterio observable"');
+      const criterion = addAcceptanceCriterion(
+        { incrementId: group.id, text, actor: "user:cli" },
+        db
+      );
+      console.log(`✓ ${criterion.code} ${criterion.text}`);
+      break;
+    }
+
+    case "decide": {
+      const groupArg = str("group") ?? positionals[1];
+      const group = groupArg ? requireGroup(groupArg) : null;
+      const decision = recordDecision(
+        {
+          projectId: project.id,
+          incrementId: group?.id,
+          title: str("title") ?? "",
+          question: str("question") ?? "",
+          answer: str("answer") ?? "",
+          alternatives: str("alternatives"),
+          impact: str("impact"),
+          actor: "user:cli",
+        },
+        db
+      );
+      console.log(`✓ ${decision.code} ${decision.title}: ${decision.answer}`);
+      break;
+    }
+
+    case "start": {
+      const group = requireGroup(positionals[1]);
+      const started = startImplementation(group.id, "agent:odd", db);
+      console.log(`✓ ${started.code} → ${started.status}`);
+      break;
+    }
+
+    case "evidence": {
+      const group = requireGroup(positionals[1]);
+      const evidence = str("evidence") ?? str("notes");
+      if (!evidence) throw new Error("Usage: requireflow group evidence G01 --evidence \"checks run\"");
+      const review = submitImplementationEvidence(
+        { incrementId: group.id, actor: "agent:odd", evidence },
+        db
+      );
+      console.log(`✓ ${group.code} evidence submitted → pendiente_revision_humana (cycle ${review.cycle})`);
+      break;
+    }
+
+    case "defect": {
+      const group = requireGroup(positionals[1]);
+      const description = str("description") ?? positionals.slice(2).join(" ").trim();
+      if (!description) throw new Error('Usage: requireflow group defect G01 --description "..."');
+      const result = reportDefect(
+        {
+          incrementId: group.id,
+          actor: "user:cli",
+          description,
+          acceptanceCriterionCode: str("ac"),
+        },
+        db
+      );
+      console.log(`✓ ${group.code} → en_correcciones (defect ${result.finding.id})`);
+      break;
+    }
+
+    case "correction": {
+      const group = requireGroup(positionals[1]);
+      const evidence = str("evidence");
+      if (!evidence) throw new Error('Usage: requireflow group correction G01 --evidence "..."');
+      const review = deliverCorrection(
+        { incrementId: group.id, actor: "agent:odd", evidence },
+        db
+      );
+      console.log(`✓ ${group.code} correction delivered → pendiente_revision_humana (cycle ${review.cycle})`);
+      break;
+    }
+
+    case "approve": {
+      assertInteractiveHuman("Scope approval");
+      const group = requireGroup(positionals[1]);
+      const expectedPhrase = `APROBAR ${group.code}`;
+      if (str("confirm") !== expectedPhrase) {
+        throw new Error(`Confirm with: --confirm "${expectedPhrase}"`);
+      }
+      const approved = approveIncrement(
+        group.id,
+        { expectedVersion: Number(str("version") ?? group.version), actor: "human:cli" },
+        db
+      );
+      console.log(
+        `✓ ${approved.code} approved: revision ${approved.approved_revision} · ${approved.approved_scope_hash?.slice(0, 12)}`
+      );
+      break;
+    }
+
+    case "accept": {
+      assertInteractiveHuman("Group acceptance");
+      const group = requireGroup(positionals[1]);
+      const expectedPhrase = `ACEPTAR ${group.code}`;
+      if (str("confirm") !== expectedPhrase) {
+        throw new Error(`Confirm with: --confirm "${expectedPhrase}"`);
+      }
+      const accepted = acceptIncrement(
+        {
+          incrementId: group.id,
+          actor: "human:cli",
+          expectedVersion: Number(str("version") ?? group.version),
+          evidence: str("evidence"),
+        },
+        db
+      );
+      console.log(`✓ ${accepted.code} accepted`);
+      break;
+    }
+
+    default:
+      throw new Error(
+        `Unknown group command "${sub}". Use: list, show, next, propose, refine, ac, decide, start, evidence, defect, correction, approve, accept.`
+      );
+  }
+}
+
 function printHelp(): void {
   console.log(`
 RequireFlow — Local-First Task & Lifecycle Engine for Developers & AI Agents
@@ -573,6 +878,8 @@ COMMANDS:
   status                Show active Kanban status (To Do, In Progress, Done)
   idea "<text>"         Capture a raw idea without creating executable work
   backlog               Show ideas, epics and stories for the project
+  group <sub>           Product groups: list, show, next, propose, refine, ac,
+                        decide, start, evidence, defect, correction, approve, accept
   add "<title>"         Add a task to backlog (-t type, -p priority, -s section)
   next                  Get the highest priority pending task to work on
   start <id>            Start working on a task (records started_at)
