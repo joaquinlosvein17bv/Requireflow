@@ -51,6 +51,8 @@ For `init`, use the V2 binary. `requireflow init --mode product` initializes the
    - `empty-new` with an explicit user request: initialise idempotently **at that directory**.
    - `existing-unregistered` / `nested-independent-repo` / `ambiguous`: **ask the user** which project to use, or require an explicit `--root`. Do not guess.
 5. If the user names a `projectId` that does not exist, fail loudly. Never fall back to the current directory's project.
+6. CLI, MCP and the dashboard resolve the same project with the same rules: an exact registered root wins, otherwise the most specific registered root containing the directory is used, and an ancestor Git root never replaces a registered project inside it. A subfolder of a registered project still belongs to that project.
+7. Read and lifecycle commands never create a project. If the directory is unregistered, the CLI fails with `No project is registered for "<dir>"`; run `requireflow init --mode product --root .` there, or move to the registered folder. Only authoring commands (`add`, `idea`, `start`, `done`, `archive`) keep the legacy bootstrap, and it registers the caller's own folder — never an ancestor Git root.
 
 ---
 
