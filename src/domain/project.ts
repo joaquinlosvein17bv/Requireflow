@@ -172,6 +172,140 @@ export function resolveCurrentProject(
   return getOrCreateProject(projectName, rootPath, db);
 }
 
+export interface InitializeProjectInput {
+  cwd: string;
+  /** Optional directory explicitly selected by the user (CLI `--root`). */
+  explicitRoot?: string;
+  mode?: ProjectMode;
+  actor?: string;
+}
+
+export interface InitializeProjectResult {
+  project: Project;
+  situation: WorkspaceSituation;
+  created: boolean;
+}
+
+/**
+ * Initializes a project at the directory the user actually selected.
+ *
+ * `resolveCurrentProject` follows the ancestor Git root, which is correct for
+ * implicit reads but wrong for `init`: an empty folder under an umbrella
+ * repository must become its own project (RF-V2-01). Ambiguous cases ask for an
+ * explicit root instead of creating a phantom project.
+ */
+export function initializeProject(
+  input: InitializeProjectInput,
+  db: Database = getDatabase()
+): InitializeProjectResult {
+  const cwdPath = path.resolve(input.cwd);
+  const explicit = input.explicitRoot?.trim();
+  const explicitRoot = explicit ? path.resolve(cwdPath, explicit) : null;
+
+  if (
+    explicitRoot &&
+    (!fs.existsSync(explicitRoot) || !fs.statSync(explicitRoot).isDirectory())
+  ) {
+    throw new Error(`Cannot initialize "${explicitRoot}": it is not an existing directory.`);
+  }
+
+  let classification = classifyWorkspace(cwdPath, db);
+  let targetRoot: string;
+
+  if (explicitRoot) {
+    classification = classifyWorkspace(explicitRoot, db);
+    if (classification.situation === "ambiguous") {
+      throw new Error(
+        `Refusing to initialize a project in a generic location. ${classification.reason}`
+      );
+    }
+    if (classification.project) {
+      if (classification.detectionSource === "exact") {
+        return finalizeInitialization(
+          classification.project,
+          classification.situation,
+          false,
+          input,
+          db
+        );
+      }
+      throw new Error(
+        `"${explicitRoot}" already belongs to project "${classification.project.name}" ` +
+          `(${classification.project.root_path}). Run init at that project root instead.`
+      );
+    }
+    targetRoot = explicitRoot;
+  } else {
+    if (classification.project) {
+      return finalizeInitialization(
+        classification.project,
+        classification.situation,
+        false,
+        input,
+        db
+      );
+    }
+
+    switch (classification.situation) {
+      case "empty-new":
+        targetRoot = cwdPath;
+        break;
+      case "nested-independent-repo":
+        targetRoot = classification.gitRoot ?? cwdPath;
+        break;
+      case "existing-unregistered":
+        if (
+          classification.gitRoot &&
+          normalizeRootPath(classification.gitRoot) !== normalizeRootPath(cwdPath)
+        ) {
+          throw new Error(
+            `"${cwdPath}" is inside the git repository "${classification.gitRoot}" but is not its root. ` +
+              `Run init with --root . to create an independent project for this folder, or run it from the repository root.`
+          );
+        }
+        targetRoot = cwdPath;
+        break;
+      default:
+        throw new Error(`Refusing to initialize a project here. ${classification.reason}`);
+    }
+  }
+
+  const rootKey = normalizeRootPath(targetRoot);
+  const existing = getProjectByRootKey(rootKey, db);
+  const project =
+    existing ??
+    getOrCreateProject(
+      path.basename(targetRoot) || "default-project",
+      targetRoot,
+      db,
+      input.mode ?? "legacy"
+    );
+
+  if (project.root_key !== rootKey) {
+    throw new Error(
+      `Project initialization resolved the wrong root: requested "${targetRoot}", ` +
+        `registered "${project.root_path ?? "none"}".`
+    );
+  }
+
+  return finalizeInitialization(project, classification.situation, existing === null, input, db);
+}
+
+function finalizeInitialization(
+  project: Project,
+  situation: WorkspaceSituation,
+  created: boolean,
+  input: InitializeProjectInput,
+  db: Database
+): InitializeProjectResult {
+  let resolved = project;
+  if (input.mode && resolved.mode !== input.mode) {
+    const updated = setProjectMode(resolved.id, input.mode, input.actor ?? "user:cli", db);
+    if (updated) resolved = updated;
+  }
+  return { project: resolved, situation, created };
+}
+
 /**
  * Finds or creates the project that owns `rootPath`.
  *
@@ -440,21 +574,36 @@ function isEmptyDirectory(dir: string): boolean {
 }
 
 /**
+ * Canonical form used only to compare a path with the generic locations.
+ *
+ * Windows may hand back an 8.3 short name (`C:\Users\MELIOD~1`) while
+ * `os.homedir()` returns the long form. Comparing the raw strings would miss
+ * the home directory and turn a dotfiles repository into a product root.
+ */
+function comparablePath(value: string): string {
+  try {
+    return normalizeRootPath(fs.realpathSync.native(value));
+  } catch {
+    return normalizeRootPath(value);
+  }
+}
+
+/**
  * Generic locations are never a product root on their own: the user works from
  * them, they are not the thing being built.
  */
 function isAmbiguousLocation(resolved: string): boolean {
-  const key = normalizeRootPath(resolved);
-  const home = normalizeRootPath(os.homedir());
+  const key = comparablePath(resolved);
+  const home = comparablePath(os.homedir());
   if (key === home) return true;
 
   const knownFolders = ["Desktop", "Documents", "Downloads", "OneDrive"].map((folder) =>
-    normalizeRootPath(path.join(os.homedir(), folder))
+    comparablePath(path.join(os.homedir(), folder))
   );
   if (knownFolders.includes(key)) return true;
 
   if (path.parse(resolved).root === resolved) return true;
-  if (key === normalizeRootPath(os.tmpdir())) return true;
+  if (key === comparablePath(os.tmpdir())) return true;
 
   return false;
 }

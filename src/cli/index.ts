@@ -13,6 +13,7 @@ import {
 import { exportLegacyDatabase } from "../domain/legacy/export.ts";
 import {
   resolveCurrentProject,
+  initializeProject,
   setProjectMode,
   isProjectMode,
   classifyWorkspace,
@@ -129,36 +130,33 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
   try {
     switch (command.toLowerCase()) {
     case "init": {
-      const classification = classifyWorkspace(process.cwd(), db);
-      if (classification.situation === "ambiguous") {
-        fail(
-          `Refusing to initialise a project in a generic location. ${classification.reason} Run it inside the product directory instead.`
-        );
+      const requestedMode = flags["mode"];
+      if (requestedMode !== undefined && !isProjectMode(requestedMode)) {
+        fail(`Invalid mode "${String(requestedMode)}". Allowed: legacy, product.`);
+        return;
+      }
+      const rootFlag = flags["root"];
+      if (rootFlag !== undefined && typeof rootFlag !== "string") {
+        fail("--root requires a directory path.");
         return;
       }
 
-      const project = resolveCurrentProject(process.cwd(), db);
-      const requestedMode = flags["mode"];
-      if (requestedMode !== undefined) {
-        if (!isProjectMode(requestedMode)) {
-          fail(`Invalid mode "${String(requestedMode)}". Allowed: legacy, product.`);
-          return;
-        }
-        const updated = setProjectMode(project.id, requestedMode, "user:cli", db);
-        if (updated) {
-          console.log(
-            `[RequireFlow] Project initialized: "${updated.name}" (ID: ${updated.id})`
-          );
-          console.log(`Root Path: ${updated.root_path || process.cwd()}`);
-          console.log(`Mode: ${updated.mode}`);
-          console.log(`Situation: ${classification.situation}`);
-          break;
-        }
-      }
-      console.log(`[RequireFlow] Project initialized: "${project.name}" (ID: ${project.id})`);
-      console.log(`Root Path: ${project.root_path || process.cwd()}`);
-      console.log(`Mode: ${project.mode}`);
-      console.log(`Situation: ${classification.situation}`);
+      const result = initializeProject(
+        {
+          cwd: process.cwd(),
+          explicitRoot: typeof rootFlag === "string" ? rootFlag : undefined,
+          mode: requestedMode,
+          actor: "user:cli",
+        },
+        db
+      );
+
+      console.log(
+        `[RequireFlow] Project initialized: "${result.project.name}" (ID: ${result.project.id})`
+      );
+      console.log(`Root Path: ${result.project.root_path || process.cwd()}`);
+      console.log(`Mode: ${result.project.mode}`);
+      console.log(`Situation: ${result.situation}`);
       break;
     }
 
@@ -918,7 +916,8 @@ USAGE:
 COMMANDS:
   db                    Show the active database, its schema and the legacy v1 file
   legacy export         Archive a RequireFlow 1 database to Markdown (read-only)
-  init [--mode <m>]    Link or initialize current directory as active project
+  init [--mode <m>] [--root <path>]
+                        Link or initialize current directory as active project
   mode [legacy|product] Show or switch the project workflow mode
   status                Show active Kanban status (To Do, In Progress, Done)
   idea "<text>"         Capture a raw idea without creating executable work
