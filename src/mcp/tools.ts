@@ -542,6 +542,20 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
           addStoryIds: z.array(z.string()).optional(),
           removeStoryIds: z.array(z.string()).optional(),
           addDependencyCodes: z.array(z.string()).optional(),
+          status: z
+            .enum([
+              "planificado",
+              "en_refinamiento",
+              "listo_para_aprobacion",
+              "aprobado",
+              "en_implementacion",
+              "pendiente_revision_humana",
+              "en_correcciones",
+              "aceptado",
+              "bloqueado",
+            ])
+            .optional()
+            .describe("Legal transition only; agents can prepare a group for approval but cannot approve it"),
         },
         (args) =>
           runTool("rf_group_refine", () => {
@@ -558,6 +572,7 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
                 addStoryIds: args.addStoryIds,
                 removeStoryIds: args.removeStoryIds,
                 addDependencyCodes: args.addDependencyCodes,
+                status: args.status,
               },
               "agent:mcp",
               db
