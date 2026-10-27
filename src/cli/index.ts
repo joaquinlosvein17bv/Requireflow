@@ -40,6 +40,11 @@ import {
   submitImplementationEvidence,
 } from "../domain/backlog/review.ts";
 import {
+  backlogSlug,
+  checkProjectBacklog,
+  exportProjectBacklog,
+} from "../domain/backlog/export.ts";
+import {
   createTask,
   listTasks,
   getNextTask,
@@ -530,6 +535,46 @@ export async function runCli(argv: string[] = process.argv, db: Database = getDa
       break;
     }
 
+    case "export": {
+      const project = resolveCurrentProject(process.cwd(), db);
+      const outDir =
+        (flags["out"] as string | undefined) ||
+        path.resolve("backlog-export", backlogSlug(project.name));
+
+      if (flagToBoolean(flags["check"], false)) {
+        const check = checkProjectBacklog({ projectId: project.id, outDir }, db);
+        if (flags["json"]) {
+          console.log(JSON.stringify(check, null, 2));
+        } else if (check.upToDate) {
+          console.log(`✓ Backlog export is up to date: ${outDir}`);
+        } else {
+          console.log(`✗ Backlog export differs from the database:`);
+          for (const difference of check.differences) console.log(`  - ${difference}`);
+          console.log(`  Re-run: requireflow export --out "${outDir}"`);
+        }
+        if (!check.upToDate) process.exitCode = 1;
+        break;
+      }
+
+      const result = exportProjectBacklog(
+        { projectId: project.id, outDir, force: flagToBoolean(flags["force"], false) },
+        db
+      );
+
+      if (flags["json"]) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`✓ Backlog exported to ${result.outDir}`);
+        console.log(
+          `  ${result.counts.epics} epics · ${result.counts.stories} stories · ${result.counts.groups} groups · ${result.counts.criteria} criteria · ${result.counts.decisions} decisions · ${result.counts.reviews} reviews`
+        );
+        console.log(`  Manifest: ${result.manifestPath}`);
+        console.log(`  Verified: ${result.verified ? "yes" : "NO"}`);
+      }
+      if (!result.verified) process.exitCode = 1;
+      break;
+    }
+
     case "ui": {
       const port = flagToNumber(flags["port"], { min: 1, max: 65535, label: "--port" });
       const hostFlag = flags["host"];
@@ -880,6 +925,7 @@ COMMANDS:
   backlog               Show ideas, epics and stories for the project
   group <sub>           Product groups: list, show, next, propose, refine, ac,
                         decide, start, evidence, defect, correction, approve, accept
+  export [--check]      Generate the deterministic V2 backlog Markdown; --check detects drift
   add "<title>"         Add a task to backlog (-t type, -p priority, -s section)
   next                  Get the highest priority pending task to work on
   start <id>            Start working on a task (records started_at)
