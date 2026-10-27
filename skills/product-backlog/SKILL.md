@@ -69,6 +69,7 @@ Descubre siempre antes de usar. En RequireFlow 2 existen:
 | Reportar evidencia de ODD | `rf_group_evidence` |
 | Registrar un defecto del usuario | `rf_group_defect` |
 | Entregar la correccion | `rf_group_correction` |
+| Exportar el backlog a Markdown | `requireflow export [--out <dir>] [--check]` (CLI; SQLite sigue siendo la fuente) |
 
 **No existe herramienta MCP para aprobar el alcance ni para aceptar el grupo.** Esas dos puertas son humanas y viven solo en el dashboard (`Aprobar alcance`, `Aceptar grupo`, con frase escrita) y en la CLI interactiva (`requireflow group approve|accept`). Si intentas aprobar por MCP, no hay camino: no lo inventes ni llames a la API en nombre del usuario.
 

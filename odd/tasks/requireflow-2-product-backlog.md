@@ -72,7 +72,7 @@ S28 (Almacenamiento V2 y export legacy, L10) "no quiero ejecutar v1→v6 ni v1�
 | T5 | S12, S16 | inline | done | `7c1d25e` |
 | T6 | S17, S18, S19, S20 | inline | done | `7c1d25e`, `8ec9a9e` |
 | T7 | S13, S21 | inline | done | `7c1d25e`, `8ec9a9e` |
-| T8 | S24 | inline | pending | — |
+| T8 | S24 | inline | done | `9fd5cf0` |
 | T9 | S9, S23 | inline | done | `8ec9a9e`, esta entrada |
 | T10 | S26, S27 | inline | done | `8ec9a9e` |
 | T11 | S28 | inline | done | `1d88ab8` |
@@ -144,3 +144,11 @@ L13 T3–T7, T9 y T10 implementados y verificados (esquema V2 v7).
 - Corrección de un test preexistente dependiente de la hora UTC (fallaba antes de las 02:00) y del contrato de `rf_task_next`, ambos documentados en el commit correspondiente.
 
 L14 Pendiente. T8: export Markdown determinista del backlog V2 con `--check` y manifiesto (el export legacy ya existe). Limitaciones abiertas: (a) la confirmación humana no es criptográfica — es un canal local con frase y TTY, no autenticación fuerte; (b) `resolveCurrentProject` sigue auto-creando proyecto para comandos legacy distintos de `init`/`idea`; (c) el registro `.atl/skill-registry.md` es local por política del repo; (d) no se verificó el descubrimiento de skills en un cliente externo, solo en el entorno de este agente.
+
+L15 T8 implementado y fase H cerrada (commit `9fd5cf0`).
+- Export V2: `requireflow export [--out <dir>] [--check]`. Genera `README.md`, `epics.md`, `decisions.md`, `groups/G##.md` y `manifest.json` con sha256 por archivo. Determinista (dos corridas byte-idénticas). `--check` distingue cambios en la base de ediciones manuales y devuelve exit 1. Un export editado a mano no se sobrescribe sin `--force`. Verificado también por CLI real sobre una base V2 temporal: export → 4 archivos + manifiesto, `--check` exit 0.
+- Grupos futuros: test dedicado (`test/groups-lifecycle.test.ts`) prueba que G01 refinado y G02/G03 provisionales conviven, que los futuros no bloquean a G01, que no se pueden aprobar sin refinar y que se pueden refinar después sin tocar el grupo aprobado.
+- Ciclos de corrección: tres defectos con identificadores propios, dos correcciones y una ronda todavía fallida; el grupo permanece `en_correcciones`, los hallazgos siguen abiertos y la aceptación humana final los resuelve sin borrar ciclos ni evidencias. Un actor máquina no puede aceptar.
+- Caminos de aprobación verificados: MCP no expone la operación (test que falla si aparece); CLI no interactiva aborta con exit 1; CLI interactiva exige `--confirm "APROBAR G01"`; HTTP exige la misma frase y atribuye `human:ui`; el dashboard usa ese endpoint con modal de frase escrita. Ninguno constituye autenticación fuerte: son barreras de canal en una herramienta local.
+- **Prueba real de agente: PENDIENTE, no ejecutada.** El servidor MCP expuesto en esta sesión es el binario anterior: `rf_project_list` devuelve los 5 proyectos de la V1 sin campo `mode` y no conoce las herramientas de grupo. No sirve para probar el flujo V2, y no simulé la interacción. Instrucciones manuales en el informe. La V1 sigue intacta tras esa llamada de solo lectura: schema v1, 5/22/52/5, mtime sin cambios.
+- Verificación final: `bun test` → **220 pass / 0 fail**, 844 expects, 32 archivos; typecheck 0; build 0; dashboard 200 con `viewGroups` y `modalConfirm`; guard TTY exit 1; V1 intacta; binario global sin reemplazar.

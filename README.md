@@ -155,6 +155,16 @@ requireflow group accept G01 --confirm "ACEPTAR G01"     # requiere TTY
 
 Estados: `planificado → en_refinamiento → listo_para_aprobacion → aprobado → en_implementacion → pendiente_revision_humana → aceptado`, con ramas `en_correcciones` y `bloqueado`. Cambiar el alcance de un grupo aprobado lo marca como *drift* y bloquea la ejecución hasta re-aprobar.
 
+### Exportación Markdown del backlog V2
+
+```bash
+requireflow export                    # backlog-export/<proyecto>/
+requireflow export --out docs/backlog
+requireflow export --check            # exit 1 si el export no coincide con SQLite
+```
+
+Genera `README.md`, `epics.md`, `decisions.md`, `groups/G01.md…` y `manifest.json` con hashes. Es **determinista**: dos ejecuciones producen bytes idénticos. `--check` detecta tanto cambios en la base como ediciones manuales; si alguien editó un archivo, el export se niega a sobrescribirlo sin `--force`. SQLite V2 sigue siendo la única fuente de verdad.
+
 ---
 
 ## 🚀 Inicio Rápido
