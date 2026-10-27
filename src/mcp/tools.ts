@@ -5,7 +5,6 @@ import path from "node:path";
 import { Database } from "bun:sqlite";
 import { getDatabase } from "../db/connection.ts";
 import {
-  resolveCurrentProject,
   getProject,
   getOrCreateProject,
   createProject,
@@ -74,8 +73,14 @@ function resolveProjectId(projectId?: string, db?: Database): string {
     return existing.id;
   }
 
-  const current = resolveCurrentProject(process.cwd(), db);
-  return current.id;
+  const detection = detectProject(process.cwd(), db);
+  if (!detection.project) {
+    throw new Error(
+      `No project is registered for the working directory "${process.cwd()}". ` +
+        `Run rf_project_detect and rf_project_add first, or pass projectId explicitly.`
+    );
+  }
+  return detection.project.id;
 }
 
 /**
