@@ -11,7 +11,7 @@ description: >
 license: MIT
 metadata:
   author: joaquinlosvein17bv
-  version: "2.1.0"
+  version: "2.2.0"
 ---
 
 # Product Backlog — PO conversacional para RequireFlow
@@ -48,6 +48,29 @@ Opera en dos modalidades:
 - **Sin RequireFlow o sin herramientas de planificacion:** trabaja en texto Markdown en el chat. Manten identificadores y decisiones en esta conversacion, pero **nunca digas que los has guardado persistentemente**. No uses `rf_task_add` para simular el registro de una idea: en el protocolo antiguo crea trabajo ejecutable.
 
 Si un instrumento falla, informa que parte no se pudo persistir y presenta el contenido recuperable; no declares exito ni inventes IDs de base de datos.
+
+### 1.1 Herramientas reales de esta version (esquema V2 v7)
+
+Descubre siempre antes de usar. En RequireFlow 2 existen:
+
+| Necesidad | Herramienta |
+| :-- | :-- |
+| Clasificar el directorio y el modo | `rf_workspace_classify`, `rf_project_list`, `rf_project_set_mode` |
+| Captura rapida (solo texto literal) | `rf_idea_capture` |
+| Leer el panorama | `rf_backlog_tree`, `rf_group_list`, `rf_group_get`, `rf_group_next` |
+| Crear epicas e historias | `rf_work_item_create` |
+| Refinar una historia (versionada) | `rf_work_item_update` (`expectedVersion` obligatorio) |
+| Promover una idea a historia | `rf_idea_promote` (rechaza marcadores sin resolver) |
+| Guardar todos los grupos de una vez | `rf_group_propose` (atomico, idempotente por codigo) |
+| Reagrupar / cambiar alcance | `rf_group_refine` (`expectedVersion`) |
+| Criterios de aceptacion | `rf_ac_add` |
+| Decisiones confirmadas | `rf_decision_record` |
+| Iniciar implementacion | `rf_group_start` (solo si el alcance esta aprobado y vigente) |
+| Reportar evidencia de ODD | `rf_group_evidence` |
+| Registrar un defecto del usuario | `rf_group_defect` |
+| Entregar la correccion | `rf_group_correction` |
+
+**No existe herramienta MCP para aprobar el alcance ni para aceptar el grupo.** Esas dos puertas son humanas y viven solo en el dashboard (`Aprobar alcance`, `Aceptar grupo`, con frase escrita) y en la CLI interactiva (`requireflow group approve|accept`). Si intentas aprobar por MCP, no hay camino: no lo inventes ni llames a la API en nombre del usuario.
 
 Si el usuario pide **solo capturar una idea**, no inicies refinamiento, no hagas preguntas salvo para determinar el proyecto de destino, no alteres grupos aprobados y no interrumpas el trabajo activo.
 

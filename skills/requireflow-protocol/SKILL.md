@@ -9,7 +9,7 @@ description: >
 license: MIT
 metadata:
   author: joaquinlosvein17bv
-  version: "2.0.0"
+  version: "2.1.0"
 ---
 
 # RequireFlow Agent Protocol — Execution
@@ -64,15 +64,22 @@ The classic task flow applies. Ideas that the user wants to keep for later still
 
 Product mode changes the rules:
 
-1. **Never call `rf_task_add` for product work.** Work enters through the planning layer.
-2. Identify the target group (`G01`, `G02`, …) from the user's instruction, or the first group that is genuinely eligible by order and dependencies.
-3. Read the group's canonical view **directly** from RequireFlow (CLI or MCP). Do not ask the user to paste a handoff document.
-4. Before implementing, all of these must be true:
-   - the group's definition is complete enough to be `ready`; and
-   - its scope revision is **approved** by the human through the reliable channel the installation provides.
-5. If a functional question is unanswered, **ask the user now**. Do not infer, do not record a placeholder, do not proceed.
-6. If the scope is not approved, ask for approval through the human channel (dashboard or interactive CLI). A message from the user to you expresses intent; it is **not** the approval record. Never set `approved_by` to a human value yourself.
-7. If the previous group is waiting for human review, do not skip it. Suggest it and stop.
+1. **Never call `rf_task_add` for product work.** Work enters through the planning layer, and the server rejects a task that is not linked to a story of an approved group.
+2. Resolve the target group: the one the user named (`G01`, `G02`, …) or `rf_group_next` when they say "the next one". `rf_group_next` never skips a group waiting for human review; if it reports `blocked`, report the blocker and stop.
+3. Read the canonical view with `rf_group_get`. It returns goal, stories, dependencies, confirmed decisions, acceptance criteria, approved revision, `drifted`, `canExecute`, `readiness.blockers` and `nextAction`. This **is** the handoff: do not ask the user to paste a document.
+4. Interpret `nextAction`:
+   - `refine` → the group still needs work. Read `readiness.blockers`, ask the user only what is missing (one to three questions per round) and refine with `rf_group_refine` / `rf_ac_add` / `rf_work_item_update`.
+   - `request_approval` → the scope is not approved, or it drifted after approval. Ask the user to approve in the dashboard or an interactive terminal. You cannot do it: there is no MCP approval tool.
+   - `implement` → approved and current. Continue with step 5.
+   - `await_review` → the group is waiting for the user's test. Do not implement it again automatically.
+   - `fix` → a defect was reported. Correct it and deliver with `rf_group_correction`.
+   - `done` / `blocked` → report and stop.
+5. If any functional decision is missing, **ask the user now**. Never record `[NO ESPECIFICADO]`, `TODO` or an invented default; the server rejects placeholders.
+6. Start implementation with `rf_group_start`, then link execution tasks to the group's stories with `rf_task_add(workItemId: ...)`. Use one task per meaningful unit, not one per micro-step, and never duplicate ODD's internal `T#` as a second editable list.
+7. Do the technical work with ODD as usual: explore, plan, implement, test.
+8. When implementation is technically complete, report evidence with `rf_group_evidence`. The group moves to `pendiente_revision_humana`. **This is not acceptance.**
+9. If the user reports a failure, record it with `rf_group_defect` (optionally naming the failed criterion). The group returns to `en_correcciones`; fix it and call `rf_group_correction`. Repeat until the user accepts.
+10. Never accept. Acceptance happens only in the dashboard or an interactive terminal, and only after the user tests the result.
 
 When no group tooling is available in this installation, say plainly: *"Esta instalación todavía no expone las herramientas de grupo; no puedo ejecutar trabajo de producto sin un alcance aprobado."* Then stop. Do not fall back to the legacy task flow.
 

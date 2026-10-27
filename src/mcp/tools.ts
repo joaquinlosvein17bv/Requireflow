@@ -1013,13 +1013,13 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
         description,
         {
           projectId: z.string().optional().describe("Project ID (defaults to current project)"),
-          forceManual: z.boolean().optional().default(true).describe("Force immediate archive flush of all done tasks"),
+          forceManual: z.boolean().optional().describe("Force immediate archive flush of all done tasks"),
           thresholdHours: z.number().optional().describe("Threshold in hours if not forcing manual flush"),
         },
         (args) =>
           runTool("rf_archive_run", () => {
             const pId = resolveProjectId(args.projectId, db);
-            return archiveDoneTasks(pId, args.forceManual ?? true, args.thresholdHours, db);
+            return archiveDoneTasks(pId, args.forceManual ?? false, args.thresholdHours, db);
           })
       )
   );

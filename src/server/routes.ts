@@ -1046,7 +1046,7 @@ export async function handleApiRoute(
     const archiveMatch = pathParam(path, /^\/api\/projects\/([^/]+)\/(?:archive|archive-done)$/);
     if (archiveMatch && method === "POST") {
       const body = await readJsonBody(req);
-      const forceManual = body.forceManual === undefined ? true : Boolean(body.forceManual);
+      const forceManual = body.forceManual === undefined ? false : Boolean(body.forceManual);
       const thresholdHours = optionalInt(body.thresholdHours, "thresholdHours", 0, 8760);
       const result = archiveDoneTasks(archiveMatch, forceManual, thresholdHours, db);
       return jsonResponse(result);

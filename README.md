@@ -126,6 +126,37 @@ Incluye metadatos (fuente, fecha, versión de esquema detectada, conteos, métod
 
 ---
 
+### Grupos de experiencia G01, G02…
+
+La IA propone **todos** los grupos iniciales de una vez; el dominio los guarda atómicamente, valida cada historia y cada criterio, y no duplica códigos existentes.
+
+```bash
+requireflow group propose --file groups.json   # { "groups": [{ "code": "G01", ... }] }
+requireflow group list
+requireflow group show G01
+requireflow group next
+requireflow group refine G01 --goal "..." --add-story <id> --depends G00
+requireflow group ac G01 "El receptor abre la carta con la imagen visible"
+requireflow group decide G01 --title "Imagen de portada" --question "¿Se elige o se sube?" --answer "Se elige de un set"
+```
+
+Ciclo de ejecución y revisión:
+
+```bash
+requireflow group start G01
+requireflow group evidence G01 --evidence "42 tests, build ok"
+requireflow group defect G01 --description "El link no muestra la imagen" --ac AC-G01-001
+requireflow group correction G01 --evidence "Corregido"
+requireflow group approve G01 --confirm "APROBAR G01"   # requiere TTY
+requireflow group accept G01 --confirm "ACEPTAR G01"     # requiere TTY
+```
+
+**Las dos puertas son humanas.** No existe herramienta MCP para aprobar ni aceptar. El dashboard ofrece los mismos botones con frase escrita; la CLI exige una terminal interactiva. Un agente no puede aprobar en tu nombre.
+
+Estados: `planificado → en_refinamiento → listo_para_aprobacion → aprobado → en_implementacion → pendiente_revision_humana → aceptado`, con ramas `en_correcciones` y `bloqueado`. Cambiar el alcance de un grupo aprobado lo marca como *drift* y bloquea la ejecución hasta re-aprobar.
+
+---
+
 ## 🚀 Inicio Rápido
 
 ### 1. Requisitos
@@ -308,6 +339,14 @@ El token no es autenticación de usuario: la frontera real sigue siendo el archi
 | `GET` | `/api/projects/:id/planning` | Árbol de ideas, épicas e historias |
 | `GET` | `/api/projects/:id/changes` | Registro append-only de cambios |
 | `GET`/`PATCH`/`DELETE` | `/api/backlog/items/:id` | Leer, actualizar o descartar un ítem de planificación |
+| `GET`/`POST` | `/api/projects/:id/work-items` | Crear épicas e historias |
+| `GET`/`POST` | `/api/projects/:id/groups` | Listar o proponer grupos completos |
+| `GET` | `/api/projects/:id/groups/next` | Primer grupo pendiente con sus bloqueos |
+| `GET`/`PATCH` | `/api/groups/:id` | Vista canónica o refinamiento versionado |
+| `POST` | `/api/groups/:id/{start,evidence,defects,corrections,criteria,decisions}` | Ciclo de ejecución y revisión |
+| `POST` | `/api/groups/:id/approve` | Aprobación humana con frase `APROBAR <código>` |
+| `POST` | `/api/groups/:id/accept` | Aceptación humana con frase `ACEPTAR <código>` |
+| `PATCH`/`DELETE` | `/api/criteria/:id` | Sustituir o retirar un criterio conservando el anterior |
 
 Toda mutación exige `expectedVersion` en el cuerpo: una versión desactualizada responde `409` con el estado vigente, en lugar de sobrescribir en silencio.
 

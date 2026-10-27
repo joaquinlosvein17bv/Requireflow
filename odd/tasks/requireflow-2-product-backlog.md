@@ -67,14 +67,14 @@ S28 (Almacenamiento V2 y export legacy, L10) "no quiero ejecutar v1→v6 ni v1�
 |---|---|---|---|---|
 | T1 | S1 | inline | done | evidencia en Log L2/L3 |
 | T2 | S2, S10, S11, S12, S22 | inline | done | `92af6c8`, `a5361ea`, `c079766` |
-| T3 | S3, S4, S14 | inline | pending | — |
-| T4 | S5, S15 | inline | pending | — |
-| T5 | S12, S16 | inline | pending | — |
-| T6 | S17, S18, S19, S20 | inline | pending | — |
-| T7 | S13, S21 | inline | pending | — |
+| T3 | S3, S4, S14 | inline | done | `7c1d25e`, `8ec9a9e`, `a90ec58` |
+| T4 | S5, S15 | inline | done | `7c1d25e` |
+| T5 | S12, S16 | inline | done | `7c1d25e` |
+| T6 | S17, S18, S19, S20 | inline | done | `7c1d25e`, `8ec9a9e` |
+| T7 | S13, S21 | inline | done | `7c1d25e`, `8ec9a9e` |
 | T8 | S24 | inline | pending | — |
-| T9 | S9, S23 | inline | pending | — |
-| T10 | S26, S27 | inline | pending | — |
+| T9 | S9, S23 | inline | done | `8ec9a9e`, esta entrada |
+| T10 | S26, S27 | inline | done | `8ec9a9e` |
 | T11 | S28 | inline | done | `1d88ab8` |
 | T12 | S5, S9 | inline | done | `0c52e74` |
 
@@ -132,3 +132,15 @@ L11 Verificación de esta entrega (reproducida en este turno).
 - `legacy-export/` queda en disco y fuera de git (`.gitignore`) porque contiene datos personales de proyectos.
 
 L12 Pendiente tras esta entrega. T3 agrupación automática G01..GN y membresía versionada; T4 preguntas en vivo + validación de promoción (sin persistir marcadores); T5 AC estables y snapshots de alcance; T6 gates efectivos de autorización y elegibilidad compartidos por los cuatro transportes + lectura directa del grupo por ODD; T7 deuda legacy; T8 export Markdown de V2 con `--check`; T9 cierre de skills y UI completa; T10 suite end-to-end de los 17 escenarios. El ciclo «describe idea → pregunta → agrupa → aprueba G01 → ODD → revisa → acepta → G02» **todavía no es ejecutable de punta a punta**: hoy existen captura de ideas, clasificación, modos, aislamiento de almacenamiento y export legacy.
+
+L13 T3–T7, T9 y T10 implementados y verificados (esquema V2 v7).
+- Migración v7 aditiva: `increments`, `increment_stories` (con `removed_at` para historial de membresía), `increment_dependencies`, `decisions`, `acceptance_criteria`, `increment_revisions` (snapshot inmutable del alcance aprobado), `increment_reviews`, `review_findings`, `review_results`.
+- Dominio: máquina de estados de grupo con transiciones legales; readiness con bloqueos legibles (objetivo, historias refinadas, criterios, dependencias aceptadas); `scope_hash` sobre historias+criterios+decisiones y detección de drift; aprobación solo con actor `human:*`; aceptación solo con actor `human:*` y revisión pendiente; ciclo evidencia → defecto → corrección → nueva revisión → aceptación, conservando ciclos y hallazgos; rechazo de marcadores (`[NO ESPECIFICADO]`, `TODO`, `TBD`, `por definir`) en títulos, descripciones, decisiones y criterios; `proposeGroups` atómico e idempotente por código; `refineIncrement` versionado en un solo paso.
+- Elegibilidad única: en modo producto `createTask`, `startTask`, `updateTask→in_progress` y `getNextTask` comparten la misma política. Tareas sin historia, historias no refinadas, grupos no aprobados o con drift quedan bloqueados con razón explícita; el modo legacy conserva el comportamiento clásico. `rf_task_next` devuelve `nextTask` + `blocked[]`.
+- Transportes: MCP (`rf_work_item_create`, `rf_work_item_update`, `rf_group_propose|list|get|next|refine|start|evidence|defect|correction`, `rf_ac_add`, `rf_decision_record`, `rf_idea_promote`), HTTP (mismos endpoints + aprobación/aceptación con frase exacta y criterios versionados) y CLI (`group list|show|next|propose|refine|ac|decide|start|evidence|defect|correction|approve|accept`; aprobar/aceptar exige TTY).
+- UI: pestaña **Grupos** con las dos vistas (por grupo y por épica), alcance canónico, bloqueos, drift, acciones humanas y modal que exige escribir `APROBAR G01` / `ACEPTAR G01`.
+- Seguridad del flujo: **no existe tool MCP de aprobación ni de aceptación**; un test falla si aparece una. El límite se documenta con honestidad: en una herramienta local sin autenticación, el dashboard y la CLI son los canales humanos, y un agente con acceso a shell y a la API podría intentar forjar la frase. La defensa real es que el MCP no expone la operación y que la CLI exige una terminal interactiva.
+- Evidencia: `bun test` → **209 pass / 0 fail**, 783 expects, 30 archivos. `bun run typecheck` → 0. `bun run build` → 0 (270 módulos). E2E HTTP de 15 pasos: idea rápida sin tarea → épicas/historias → propuesta G01/G02/G03 cross-épica → refinamiento de G01 → aprobación humana → lectura directa → G02 bloqueado → tarea sin historia rechazada → inicio + evidencia → `pendiente_revision_humana` → defecto → corrección (ciclo 2) → aceptación → G02 siguiente sin ejecutar.
+- Corrección de un test preexistente dependiente de la hora UTC (fallaba antes de las 02:00) y del contrato de `rf_task_next`, ambos documentados en el commit correspondiente.
+
+L14 Pendiente. T8: export Markdown determinista del backlog V2 con `--check` y manifiesto (el export legacy ya existe). Limitaciones abiertas: (a) la confirmación humana no es criptográfica — es un canal local con frase y TTY, no autenticación fuerte; (b) `resolveCurrentProject` sigue auto-creando proyecto para comandos legacy distintos de `init`/`idea`; (c) el registro `.atl/skill-registry.md` es local por política del repo; (d) no se verificó el descubrimiento de skills en un cliente externo, solo en el entorno de este agente.
