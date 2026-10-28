@@ -32,17 +32,21 @@
 
       <!-- Main Navigation -->
       <nav class="sidebar-nav">
-        <button class="nav-item active" data-tab="kanban">
+        <button class="nav-item active" data-tab="overview">
+          <span class="nav-icon">🧭</span>
+          <span class="nav-label">Resumen</span>
+        </button>
+        <button class="nav-item" data-tab="groups">
+          <span class="nav-icon">🧩</span>
+          <span class="nav-label">Grupos G01…</span>
+        </button>
+        <button class="nav-item" data-tab="kanban">
           <span class="nav-icon">📋</span>
           <span class="nav-label">Tablero Kanban</span>
         </button>
         <button class="nav-item" data-tab="ideas">
           <span class="nav-icon">💡</span>
           <span class="nav-label">Ideas</span>
-        </button>
-        <button class="nav-item" data-tab="groups">
-          <span class="nav-icon">🧩</span>
-          <span class="nav-label">Grupos G01…</span>
         </button>
         <button class="nav-item" data-tab="backlog">
           <span class="nav-icon">📝</span>
@@ -76,11 +80,11 @@
       <!-- Top Bar -->
       <header class="top-bar">
         <div class="top-bar-left">
-          <h1 id="currentTabTitle" class="tab-title">Tablero Kanban</h1>
-          <div id="sectionFilterBar" class="section-chips"></div>
+          <h1 id="currentTabTitle" class="tab-title">Resumen del producto</h1>
+          <div id="sectionFilterBar" class="section-chips" style="display: none"></div>
         </div>
         <div class="top-bar-right">
-          <button id="btnOpenNewTask" class="btn-primary">
+          <button id="btnOpenNewTask" class="btn-primary" hidden>
             <span>+ Nueva Tarea</span>
           </button>
         </div>
@@ -88,8 +92,45 @@
 
       <!-- Views Container -->
       <div class="view-viewport">
+        <!-- 0. Overview: supervision first -->
+        <section id="viewOverview" class="view-panel active">
+          <div class="overview">
+            <div id="overviewSummary" class="overview-summary"></div>
+            <div id="overviewStatusStrip" class="status-strip" aria-label="Estado de los grupos"></div>
+
+            <section class="surface">
+              <div class="surface-head">
+                <div>
+                  <h2>Grupos funcionales</h2>
+                  <p class="surface-sub">Creados por product-backlog. Seleccioná uno para ver su alcance completo.</p>
+                </div>
+                <span id="overviewGroupCount" class="count-pill">0</span>
+              </div>
+              <div id="overviewGroups" class="group-card-grid"></div>
+              <div id="overviewEmpty" class="empty-state" hidden>
+                Todavía no hay grupos. Pedile al agente que organice el backlog con product-backlog.
+              </div>
+            </section>
+
+            <section class="surface">
+              <div class="surface-head">
+                <div>
+                  <h2>Mapa del producto</h2>
+                  <p class="surface-sub">Dos lecturas de los mismos datos: por experiencia o por épica.</p>
+                </div>
+                <div class="segmented" role="tablist" aria-label="Perspectiva del mapa">
+                  <button id="btnMapByGroup" class="segment active" role="tab" aria-selected="true">Por grupo</button>
+                  <button id="btnMapByEpic" class="segment" role="tab" aria-selected="false">Por épica</button>
+                </div>
+              </div>
+              <div id="overviewMapGroups" class="tree"></div>
+              <div id="overviewMapEpics" class="tree" hidden></div>
+            </section>
+          </div>
+        </section>
+
         <!-- 1. Kanban View -->
-        <section id="viewKanban" class="view-panel active">
+        <section id="viewKanban" class="view-panel">
           <div class="kanban-grid">
             <!-- Por Hacer (To Do) -->
             <div class="kanban-column" id="colTodo" data-status="todo">
@@ -160,10 +201,11 @@
                 <button id="btnViewByGroup" class="btn-secondary btn-sm active">Por grupo</button>
                 <button id="btnViewByEpic" class="btn-secondary btn-sm">Por épica</button>
               </div>
+              <div id="groupFilters" class="filter-chips" aria-label="Filtrar grupos por estado"></div>
               <div id="groupsList" class="groups-list"></div>
               <div id="epicsList" class="groups-list" hidden></div>
             </aside>
-            <div id="groupDetail" class="group-detail">
+            <div id="groupDetail" class="group-detail" aria-live="polite">
               <div class="empty-state">Seleccioná un grupo para ver su alcance.</div>
             </div>
           </div>

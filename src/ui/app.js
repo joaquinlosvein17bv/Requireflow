@@ -5,18 +5,45 @@ const state = {
   projects: [],
   currentProject: null,
   sections: [],
-  activeTab: "kanban",
+  activeTab: "overview",
   activeSectionFilter: null,
   kanbanData: { todo: [], in_progress: [], done: [] },
   ideas: { projectId: null, ideas: [], epics: [], stories: [], ungrouped: [] },
   groups: [],
   selectedGroupId: null,
+  selectedGroupDetail: null,
+  groupFilter: "all",
   epics: [],
+  planning: { ideas: [], epics: [], stories: [], ungrouped: [] },
+  overviewMap: "groups",
+  editMode: false,
   backlogTasks: [],
   historyData: { items: [], total: 0, page: 1, limit: 20 },
   metrics: null,
   searchDebounceTimer: null,
 };
+
+const GROUP_STATUS_LABELS = {
+  planificado: "Planificado",
+  en_refinamiento: "En refinamiento",
+  listo_para_aprobacion: "Listo para aprobar",
+  aprobado: "Aprobado",
+  en_implementacion: "En implementación",
+  pendiente_revision_humana: "Pendiente de revisión",
+  en_correcciones: "En correcciones",
+  aceptado: "Aceptado",
+  bloqueado: "Bloqueado",
+};
+
+const GROUP_FILTERS = [
+  { key: "all", label: "Todos" },
+  { key: "provisional", label: "Provisionales", statuses: ["planificado", "en_refinamiento"] },
+  { key: "approval", label: "Por aprobar", statuses: ["listo_para_aprobacion"] },
+  { key: "running", label: "En ejecución", statuses: ["aprobado", "en_implementacion"] },
+  { key: "review", label: "En revisión", statuses: ["pendiente_revision_humana", "en_correcciones"] },
+  { key: "accepted", label: "Aceptados", statuses: ["aceptado"] },
+  { key: "blocked", label: "Bloqueados", statuses: ["bloqueado"] },
+];
 
   // --- API Client ---
   // The mutation token is issued per server process and read from the
@@ -263,54 +290,373 @@ const state = {
   }
 
   // --- Tab Navigation ---
+  function switchTab(tab) {
+    document.querySelectorAll(".sidebar-nav .nav-item").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-tab") === tab);
+    });
+
+    state.activeTab = tab;
+    document.querySelectorAll(".view-panel").forEach((panel) => {
+      panel.classList.remove("active");
+    });
+    document.getElementById(`view${capitalize(tab)}`)?.classList.add("active");
+
+    const titles = {
+      overview: "Resumen del producto",
+      kanban: "Tablero Kanban",
+      ideas: "Ideas",
+      groups: "Grupos de experiencia",
+      backlog: "Backlog & Secciones",
+      history: "Historial Permanente",
+      metrics: "Eficiencia y Métricas",
+      projects: "Gestor de Proyectos",
+    };
+    const titleEl = document.getElementById("currentTabTitle");
+    if (titleEl) titleEl.textContent = titles[tab] || "RequireFlow";
+
+    const showsSections = tab === "kanban" || tab === "backlog";
+    const filterBar = document.getElementById("sectionFilterBar");
+    if (filterBar) filterBar.style.display = showsSections ? "flex" : "none";
+
+    const newTaskButton = document.getElementById("btnOpenNewTask");
+    if (newTaskButton) newTaskButton.hidden = !(tab === "kanban" || tab === "backlog");
+
+    loadActiveTabData();
+  }
+
   function initTabs() {
-    const navItems = document.querySelectorAll(".sidebar-nav .nav-item");
-    navItems.forEach((btn) => {
+    document.querySelectorAll(".sidebar-nav .nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
-        navItems.forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-
         const tab = btn.getAttribute("data-tab");
-        state.activeTab = tab;
-
-        document.querySelectorAll(".view-panel").forEach((panel) => {
-          panel.classList.remove("active");
-        });
-
-        const targetPanel = document.getElementById(`view${capitalize(tab)}`);
-        targetPanel?.classList.add("active");
-
-        const titles = {
-          kanban: "Tablero Kanban",
-          ideas: "Ideas",
-          groups: "Grupos de experiencia",
-          backlog: "Backlog & Secciones",
-          history: "Historial Permanente",
-          metrics: "Eficiencia & Métricas",
-          projects: "Gestor de Proyectos",
-        };
-        const titleEl = document.getElementById("currentTabTitle");
-        if (titleEl) titleEl.textContent = titles[tab] || "RequireFlow";
-
-        // Section filter only makes sense in kanban & backlog
-        const filterBar = document.getElementById("sectionFilterBar");
-        if (filterBar) {
-          filterBar.style.display = (tab === "kanban" || tab === "backlog") ? "flex" : "none";
-        }
-
-        loadActiveTabData();
+        if (tab) switchTab(tab);
       });
     });
+
+    const newTaskButton = document.getElementById("btnOpenNewTask");
+    if (newTaskButton) newTaskButton.hidden = true;
   }
 
   function capitalize(str) {
     return str.charAt(0).toUpperCase() + str.slice(1);
   }
 
+  function groupStatusLabel(status) {
+    return GROUP_STATUS_LABELS[status] ?? status ?? "sin estado";
+  }
+
+  function statusBadge(status) {
+    return createEl("span", {
+      class: `badge status-badge status-${status}`,
+      text: groupStatusLabel(status),
+    });
+  }
+
+  function groupTitle(group) {
+    return group.name || group.goal || "(sin nombre)";
+  }
+
+  function epicForStory(story) {
+    if (!story || !story.parent_id) return null;
+    return (state.planning.epics ?? []).find((epic) => epic.id === story.parent_id) ?? null;
+  }
+
+  function groupsForStory(storyId) {
+    return state.groups
+      .filter((view) => view.stories.some((story) => story.id === storyId))
+      .map((view) => view.increment.code);
+  }
+
+  function groupBlockReason(view) {
+    const group = view.increment;
+    if (view.readiness && !view.readiness.ready && view.readiness.blockers.length > 0) {
+      return view.readiness.blockers.join(" · ");
+    }
+    if (group.status === "planificado" || group.status === "en_refinamiento") {
+      return "Falta refinamiento antes de aprobar el alcance.";
+    }
+    if (view.drifted) return "El alcance cambió después de la aprobación; requiere nueva aprobación.";
+    if (group.status === "bloqueado") return "El grupo está bloqueado.";
+    if (group.status === "aceptado") return "Aceptado por revisión humana.";
+    if (group.status === "pendiente_revision_humana") return "Esperando tu prueba y aceptación.";
+    if (group.status === "en_correcciones") return "Hay un defecto reportado en corrección.";
+    return "";
+  }
+
+  function nextActionLabel(action) {
+    const labels = {
+      refine: "Refinar alcance",
+      request_approval: "Pedir aprobación",
+      implement: "Listo para implementar",
+      await_review: "Esperando revisión",
+      fix: "Corregir defecto",
+      done: "Terminado",
+      blocked: "Bloqueado",
+    };
+    return labels[action] ?? action ?? "";
+  }
+
+  function renderChips(items, className = "chip-row") {
+    const row = createEl("div", { class: className });
+    for (const item of items) row.append(item);
+    return row;
+  }
+
+  // --- 1a. Overview: supervision first ---
+  async function loadOverview() {
+    if (!state.currentProject) return;
+    const [groups, planning] = await Promise.all([
+      fetchAPI(`/api/projects/${state.currentProject.id}/groups`),
+      fetchAPI(`/api/projects/${state.currentProject.id}/planning`),
+    ]);
+    state.groups = groups;
+    state.planning = planning;
+    state.epics = planning.epics ?? [];
+    renderOverview();
+    renderOverviewMap();
+  }
+
+  function renderOverview() {
+    const summary = document.getElementById("overviewSummary");
+    const strip = document.getElementById("overviewStatusStrip");
+    const grid = document.getElementById("overviewGroups");
+    const count = document.getElementById("overviewGroupCount");
+    const empty = document.getElementById("overviewEmpty");
+    if (!summary || !strip || !grid) return;
+
+    const project = state.currentProject;
+    const groups = state.groups;
+    const storyCount = groups.reduce((total, view) => total + view.stories.length, 0);
+    const criteriaCount = groups.reduce((total, view) => total + view.acceptanceCriteria.length, 0);
+    const accepted = groups.filter((view) => view.increment.status === "aceptado").length;
+
+    summary.innerHTML = "";
+    summary.append(
+      createEl("div", { class: "summary-main" }, [
+        createEl("p", { class: "eyebrow-sm", text: "Supervisión del producto" }),
+        createEl("h2", { text: project?.name || "Proyecto" }),
+        createEl("p", { class: "surface-sub", text: project?.root_path || "" }),
+      ]),
+      createEl("div", { class: "summary-stats" }, [
+        createEl("div", { class: "stat" }, [
+          createEl("span", { class: "stat-value", text: String(groups.length) }),
+          createEl("span", { class: "stat-label", text: "grupos" }),
+        ]),
+        createEl("div", { class: "stat" }, [
+          createEl("span", { class: "stat-value", text: String(storyCount) }),
+          createEl("span", { class: "stat-label", text: "historias" }),
+        ]),
+        createEl("div", { class: "stat" }, [
+          createEl("span", { class: "stat-value", text: String(criteriaCount) }),
+          createEl("span", { class: "stat-label", text: "criterios" }),
+        ]),
+        createEl("div", { class: "stat" }, [
+          createEl("span", { class: "stat-value", text: String(accepted) }),
+          createEl("span", { class: "stat-label", text: "aceptados" }),
+        ]),
+      ])
+    );
+
+    strip.innerHTML = "";
+    const present = new Set(groups.map((view) => view.increment.status));
+    for (const status of Object.keys(GROUP_STATUS_LABELS)) {
+      if (!present.has(status)) continue;
+      const total = groups.filter((view) => view.increment.status === status).length;
+      const chip = createEl("button", {
+        class: `status-chip status-${status}`,
+        text: `${groupStatusLabel(status)} · ${total}`,
+      });
+      chip.addEventListener("click", () => {
+        state.groupFilter = status === "aceptado" ? "accepted" : "all";
+        switchTab("groups");
+      });
+      strip.append(chip);
+    }
+    if (strip.childElementCount === 0) {
+      strip.append(createEl("span", { class: "surface-sub", text: "Sin grupos todavía." }));
+    }
+
+    if (count) count.textContent = String(groups.length);
+    grid.innerHTML = "";
+    if (empty) empty.toggleAttribute("hidden", groups.length > 0);
+
+    for (const view of groups) {
+      grid.append(buildGroupCard(view));
+    }
+  }
+
+  function buildGroupCard(view) {
+    const group = view.increment;
+    const card = createEl("article", {
+      class: `group-card border-${group.status}`,
+      dataset: { code: group.code },
+      attrs: { tabindex: "0", role: "button", "aria-label": `${group.code} ${groupTitle(group)}` },
+    });
+
+    card.append(
+      createEl("div", { class: "group-card-head" }, [
+        createEl("span", { class: "group-code", text: group.code }),
+        statusBadge(group.status),
+      ]),
+      createEl("h3", { class: "group-card-title", text: groupTitle(group) }),
+      createEl("p", { class: "group-card-meta" }, [
+        `${view.stories.length} historias · ${view.acceptanceCriteria.length} criterios`,
+      ])
+    );
+
+    if (view.dependencies.length > 0) {
+      const deps = createEl("div", { class: "dep-row" });
+      deps.append(createEl("span", { class: "dep-label", text: "Depende de" }));
+      for (const dependency of view.dependencies) deps.append(createEl("span", { class: "dep-chip", text: dependency.code }));
+      card.append(deps);
+    }
+
+    const reason = groupBlockReason(view);
+    if (reason) card.append(createEl("p", { class: "group-card-reason", text: reason }));
+    card.append(
+      createEl("div", { class: "group-card-foot" }, [
+        createEl("span", { class: "next-action", text: nextActionLabel(view.nextAction) }),
+        createEl("span", {
+          class: `exec-pill ${view.canExecute ? "exec-yes" : "exec-no"}`,
+          text: view.canExecute ? "Ejecutable" : "No ejecutable",
+        }),
+      ])
+    );
+
+    const open = () => {
+      state.selectedGroupId = group.id;
+      switchTab("groups");
+    };
+    card.addEventListener("click", open);
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        open();
+      }
+    });
+
+    return card;
+  }
+
+  function renderOverviewMap() {
+    const groupsEl = document.getElementById("overviewMapGroups");
+    const epicsEl = document.getElementById("overviewMapEpics");
+    if (!groupsEl || !epicsEl) return;
+
+    groupsEl.innerHTML = "";
+    epicsEl.innerHTML = "";
+
+    for (const view of state.groups) groupsEl.append(buildGroupTree(view));
+
+    if ((state.planning.epics ?? []).length === 0) {
+      epicsEl.append(createEl("div", { class: "empty-state", text: "Todavía no hay épicas." }));
+    } else {
+      for (const epic of state.planning.epics) epicsEl.append(buildEpicTree(epic));
+    }
+
+    const showGroups = state.overviewMap === "groups";
+    groupsEl.toggleAttribute("hidden", !showGroups);
+    epicsEl.toggleAttribute("hidden", showGroups);
+    document.getElementById("btnMapByGroup")?.classList.toggle("active", showGroups);
+    document.getElementById("btnMapByEpic")?.classList.toggle("active", !showGroups);
+    document.getElementById("btnMapByGroup")?.setAttribute("aria-selected", String(showGroups));
+    document.getElementById("btnMapByEpic")?.setAttribute("aria-selected", String(!showGroups));
+  }
+
+  function buildGroupTree(view) {
+    const group = view.increment;
+    const node = createEl("details", { class: "tree-node" });
+    const summary = createEl("summary", { class: "tree-summary" });
+    summary.append(
+      createEl("span", { class: "group-code", text: group.code }),
+      createEl("strong", { text: groupTitle(group) }),
+      statusBadge(group.status)
+    );
+    node.append(summary);
+
+    const body = createEl("div", { class: "tree-body" });
+
+    const stories = createEl("div", { class: "tree-level" });
+    stories.append(createEl("h4", { text: `Historias (${view.stories.length})` }));
+    for (const story of view.stories) {
+      const epic = epicForStory(story);
+      stories.append(
+        createEl("div", { class: "tree-row" }, [
+          createEl("span", { class: "group-code", text: story.code || "H???" }),
+          createEl("span", { class: "tree-row-title", text: story.title }),
+          createEl("span", { class: "tree-tag", text: epic ? `${epic.code} · ${epic.title}` : "sin épica" }),
+        ])
+      );
+    }
+    body.append(stories);
+
+    const criteria = createEl("div", { class: "tree-level" });
+    criteria.append(createEl("h4", { text: `Criterios (${view.acceptanceCriteria.length})` }));
+    for (const criterion of view.acceptanceCriteria) {
+      criteria.append(
+        createEl("div", { class: `tree-row criterion-${criterion.status}` }, [
+          createEl("span", { class: "group-code", text: criterion.code }),
+          createEl("span", { class: "tree-row-title", text: criterion.text }),
+          createEl("span", { class: "tree-tag", text: criterion.status }),
+        ])
+      );
+    }
+    body.append(criteria);
+
+    node.append(body);
+    return node;
+  }
+
+  function buildEpicTree(epic) {
+    const node = createEl("details", { class: "tree-node" });
+    const summary = createEl("summary", { class: "tree-summary" });
+    summary.append(
+      createEl("span", { class: "group-code", text: epic.code || "E??" }),
+      createEl("strong", { text: epic.title }),
+      createEl("span", { class: "badge", text: epic.status })
+    );
+    node.append(summary);
+
+    const body = createEl("div", { class: "tree-body" });
+    const stories = createEl("div", { class: "tree-level" });
+    for (const story of epic.stories ?? []) {
+      const memberships = groupsForStory(story.id);
+      stories.append(
+        createEl("div", { class: "tree-row" }, [
+          createEl("span", { class: "group-code", text: story.code || "H???" }),
+          createEl("span", { class: "tree-row-title", text: story.title }),
+          createEl("span", {
+            class: "tree-tag",
+            text: memberships.length > 0 ? `en ${memberships.join(", ")}` : "fuera de grupos",
+          }),
+        ])
+      );
+    }
+    if (stories.childElementCount === 0) {
+      stories.append(createEl("div", { class: "surface-sub", text: "Esta épica no tiene historias." }));
+    }
+    body.append(stories);
+    node.append(body);
+    return node;
+  }
+
+  function initOverviewMap() {
+    document.getElementById("btnMapByGroup")?.addEventListener("click", () => {
+      state.overviewMap = "groups";
+      renderOverviewMap();
+    });
+    document.getElementById("btnMapByEpic")?.addEventListener("click", () => {
+      state.overviewMap = "epics";
+      renderOverviewMap();
+    });
+  }
+
   async function loadActiveTabData() {
     if (!state.currentProject) return;
 
     switch (state.activeTab) {
+      case "overview":
+        await loadOverview();
+        break;
       case "kanban":
         await loadKanban();
         break;
@@ -427,6 +773,7 @@ const state = {
       fetchAPI(`/api/projects/${state.currentProject.id}/planning`),
     ]);
     state.groups = groups;
+    state.planning = planning;
     state.epics = planning.epics ?? [];
 
     if (
@@ -436,9 +783,53 @@ const state = {
       state.selectedGroupId = state.groups[0]?.increment.id ?? null;
     }
 
+    renderGroupFilters();
     renderGroups();
     renderEpics();
+    await loadGroupDetail();
+  }
+
+  async function loadGroupDetail() {
+    if (!state.selectedGroupId) {
+      state.selectedGroupDetail = null;
+      renderGroupDetail();
+      return;
+    }
+    try {
+      state.selectedGroupDetail = await fetchAPI(`/api/groups/${state.selectedGroupId}`);
+    } catch {
+      state.selectedGroupDetail = null;
+    }
     renderGroupDetail();
+  }
+
+  function renderGroupFilters() {
+    const box = document.getElementById("groupFilters");
+    if (!box) return;
+    box.innerHTML = "";
+
+    for (const filter of GROUP_FILTERS) {
+      const total =
+        filter.key === "all"
+          ? state.groups.length
+          : state.groups.filter((view) => (filter.statuses ?? []).includes(view.increment.status)).length;
+      const chip = createEl("button", {
+        class: `filter-chip ${state.groupFilter === filter.key ? "active" : ""}`,
+        text: `${filter.label} · ${total}`,
+      });
+      chip.addEventListener("click", () => {
+        state.groupFilter = filter.key;
+        renderGroupFilters();
+        renderGroups();
+      });
+      box.append(chip);
+    }
+  }
+
+  function filteredGroups() {
+    const filter = GROUP_FILTERS.find((entry) => entry.key === state.groupFilter);
+    if (!filter || !filter.statuses) return state.groups;
+    return state.groups.filter((view) => filter.statuses.includes(view.increment.status));
   }
 
   function renderGroups() {
@@ -456,28 +847,38 @@ const state = {
       return;
     }
 
-    for (const view of state.groups) {
+    const visible = filteredGroups();
+    if (visible.length === 0) {
+      list.append(createEl("div", { class: "empty-state", text: "Ningún grupo coincide con este filtro." }));
+      return;
+    }
+
+    for (const view of visible) {
       const group = view.increment;
       const button = createEl("button", {
         class: `group-item ${state.selectedGroupId === group.id ? "active" : ""}`,
         dataset: { id: group.id },
       });
+      const head = createEl("div", { class: "group-item-head" }, [
+        createEl("span", { class: "group-code", text: group.code }),
+        statusBadge(group.status),
+      ]);
+      if (view.drifted) {
+        head.append(createEl("span", { class: "group-drift", text: "⚠ deriva" }));
+      }
       button.append(
-        createEl("div", { class: "group-item-head" }, [
-          createEl("span", { class: "group-code", text: group.code }),
-          createEl("span", { class: `badge group-status group-status-${group.status}`, text: group.status }),
-          view.drifted ? createEl("span", { class: "group-drift", text: "⚠ drift" }) : document.createTextNode(""),
-        ]),
-        createEl("div", { class: "group-item-name", text: group.name || group.goal || "(sin nombre)" }),
+        head,
+        createEl("div", { class: "group-item-name", text: groupTitle(group) }),
         createEl("div", {
           class: "group-item-meta",
-          text: `${view.stories.length} historias · ${view.acceptanceCriteria.length} AC · ${view.nextAction}`,
+          text: `${view.stories.length} historias · ${view.acceptanceCriteria.length} criterios`,
         })
       );
-      button.addEventListener("click", () => {
+      button.addEventListener("click", async () => {
         state.selectedGroupId = group.id;
+        state.editMode = false;
         renderGroups();
-        renderGroupDetail();
+        await loadGroupDetail();
       });
       list.append(button);
     }
@@ -502,12 +903,17 @@ const state = {
         ]),
         createEl("div", { class: "group-item-name", text: epic.title })
       );
-      for (const story of epic.stories) {
+      for (const story of epic.stories ?? []) {
+        const memberships = groupsForStory(story.id);
         card.append(
           createEl("div", { class: "epic-story" }, [
             createEl("span", { class: "group-code", text: story.code || "H???" }),
             document.createTextNode(` ${story.title} `),
             createEl("span", { class: "badge", text: story.status }),
+            createEl("span", {
+              class: "tree-tag",
+              text: memberships.length > 0 ? ` ${memberships.join(", ")}` : " fuera de grupos",
+            }),
           ])
         );
       }
@@ -515,80 +921,328 @@ const state = {
     }
   }
 
+  function detailView() {
+    const detail = state.selectedGroupDetail;
+    const fromList = state.groups.find((entry) => entry.increment.id === state.selectedGroupId);
+    if (detail && fromList && detail.increment.id === fromList.increment.id) {
+      return { ...fromList, ...detail };
+    }
+    return detail ?? fromList ?? null;
+  }
+
+  function buildSection(title, children, options = {}) {
+    const section = createEl("section", { class: `group-section ${options.class || ""}`.trim() });
+    const head = createEl("div", { class: "section-head" }, [createEl("h3", { text: title })]);
+    if (options.count !== undefined) {
+      head.append(createEl("span", { class: "count-pill", text: String(options.count) }));
+    }
+    section.append(head);
+    section.append(...children);
+    return section;
+  }
+
   function renderGroupDetail() {
     const detail = document.getElementById("groupDetail");
     if (!detail) return;
     detail.innerHTML = "";
 
-    const view = state.groups.find((entry) => entry.increment.id === state.selectedGroupId);
+    const view = detailView();
     if (!view) {
-      detail.append(
-        createEl("div", { class: "empty-state", text: "Seleccioná un grupo para ver su alcance." })
-      );
+      detail.append(createEl("div", { class: "empty-state", text: "Seleccioná un grupo para ver su alcance." }));
       return;
     }
 
     const group = view.increment;
-    const head = createEl("div", { class: "group-detail-head" });
-    head.append(
-      createEl("h2", { text: `${group.code} — ${group.name || "(sin nombre)"}` }),
-      createEl("div", { class: "group-item-head" }, [
-        createEl("span", { class: `badge group-status group-status-${group.status}`, text: group.status }),
-        createEl("span", { class: "badge", text: `revisión ${group.approved_revision}` }),
-        view.drifted ? createEl("span", { class: "group-drift", text: "⚠ alcance cambiado" }) : document.createTextNode(""),
-      ]),
-      createEl("p", { class: "group-goal", text: group.goal || "Sin objetivo definido" })
+    const criteria = view.acceptanceCriteria ?? [];
+    const activeCriteria = criteria.filter((criterion) => criterion.status === "active");
+    const supersededCriteria = criteria.filter((criterion) => criterion.status === "superseded");
+    const retiredCriteria = criteria.filter((criterion) => criterion.status === "retired");
+
+    const head = createEl("header", { class: "group-detail-head" });
+    const badgeRow = createEl("div", { class: "group-badges" }, [
+      statusBadge(group.status),
+      createEl("span", { class: "badge badge-quiet", text: `revisión actual ${group.version}` }),
+      createEl("span", { class: "badge badge-quiet", text: `aprobada ${group.approved_revision || 0}` }),
+    ]);
+    if (view.drifted) badgeRow.append(createEl("span", { class: "badge badge-warning", text: "⚠ alcance derivado" }));
+    badgeRow.append(
+      createEl("span", {
+        class: `badge ${view.canExecute ? "badge-success" : "badge-quiet"}`,
+        text: view.canExecute ? "Ejecutable" : "No ejecutable",
+      })
     );
+
+    head.append(
+      createEl("div", { class: "detail-kicker" }, [
+        createEl("span", { class: "group-code", text: group.code }),
+        createEl("span", { class: "detail-next", text: nextActionLabel(view.nextAction) }),
+      ]),
+      createEl("h2", { text: groupTitle(group) }),
+      badgeRow,
+      createEl("p", { class: "group-goal", text: group.goal || "Sin objetivo definido." })
+    );
+
+    const reason = groupBlockReason(view);
+    if (reason) head.append(createEl("p", { class: "group-reason", text: reason }));
+
+    if (view.dependencies.length > 0) {
+      const deps = createEl("div", { class: "dep-row" });
+      deps.append(createEl("span", { class: "dep-label", text: "Depende de" }));
+      for (const dependency of view.dependencies) {
+        deps.append(
+          createEl("span", { class: "dep-chip", text: `${dependency.code} · ${groupStatusLabel(dependency.status)}` })
+        );
+      }
+      head.append(deps);
+    }
+
+    head.append(
+      createEl("div", { class: "detail-meta" }, [
+        createEl("span", { text: `Historias: ${view.stories.length}` }),
+        createEl("span", { text: `Criterios activos: ${activeCriteria.length}` }),
+        createEl("span", { text: `Decisión(es): ${(view.decisions ?? []).length}` }),
+        createEl("span", { text: `Aprobada: ${group.approved_at ? formatDate(group.approved_at) : "sin aprobar"}` }),
+      ])
+    );
+
+    const actions = buildGroupActions(view);
+    if (actions) head.append(actions);
     detail.append(head);
 
-    if (!view.readiness.ready) {
-      const blockers = createEl("div", { class: "group-blockers" });
-      blockers.append(createEl("h3", { text: "Bloqueos de refinamiento" }));
-      for (const blocker of view.readiness.blockers) {
-        blockers.append(createEl("div", { class: "blocker", text: `! ${blocker}` }));
+    detail.append(
+      buildSection(
+        "Historias",
+        view.stories.length === 0
+          ? [createEl("div", { class: "empty-state", text: "Este grupo todavía no tiene historias." })]
+          : view.stories.map((story) => buildStoryRow(story)),
+        { count: view.stories.length }
+      )
+    );
+
+    const criteriaNodes = [];
+    if (activeCriteria.length > 0) {
+      criteriaNodes.push(createEl("h4", { class: "subhead", text: "Activos" }));
+      for (const criterion of activeCriteria) criteriaNodes.push(buildCriterionRow(criterion, criteria, view));
+    }
+    if (supersededCriteria.length > 0) {
+      criteriaNodes.push(createEl("h4", { class: "subhead", text: "Sustituidos" }));
+      for (const criterion of supersededCriteria) criteriaNodes.push(buildCriterionRow(criterion, criteria, view));
+    }
+    if (retiredCriteria.length > 0) {
+      criteriaNodes.push(createEl("h4", { class: "subhead", text: "Retirados" }));
+      for (const criterion of retiredCriteria) criteriaNodes.push(buildCriterionRow(criterion, criteria, view));
+    }
+    if (criteria.length === 0) {
+      criteriaNodes.push(createEl("div", { class: "empty-state", text: "Sin criterios de aceptación todavía." }));
+    } else {
+      criteriaNodes.push(
+        createEl("p", {
+          class: "surface-sub",
+          text: "El dominio actual no vincula cada criterio a una historia concreta: pertenecen al grupo aprobado.",
+        })
+      );
+    }
+    detail.append(buildSection("Criterios de aceptación", criteriaNodes, { count: criteria.length }));
+
+    detail.append(
+      buildSection(
+        "Decisiones",
+        (view.decisions ?? []).length === 0
+          ? [createEl("div", { class: "empty-state", text: "Sin decisiones registradas." })]
+          : view.decisions.map((decision) => buildDecisionRow(decision)),
+        { count: (view.decisions ?? []).length }
+      )
+    );
+
+    detail.append(
+      buildSection("Fuera de alcance", [
+        createEl("p", {
+          class: "prose",
+          text: view.exclusiones || "Este grupo no declara exclusiones.",
+        }),
+      ])
+    );
+
+    const blockerNodes = (view.readiness?.blockers ?? []).map((blocker) =>
+      createEl("div", { class: "blocker", text: `! ${blocker}` })
+    );
+    detail.append(
+      buildSection(
+        "Dudas y bloqueos pendientes",
+        view.readiness?.ready
+          ? [createEl("div", { class: "empty-state", text: "Sin dudas bloqueantes. El grupo está listo según el dominio." })]
+          : blockerNodes,
+        { count: view.readiness?.blockers?.length ?? 0 }
+      )
+    );
+
+    detail.append(buildReviewsSection(view));
+
+    if (state.editMode) detail.append(buildEditPanel(view));
+  }
+
+  function buildStoryRow(story) {
+    const epic = epicForStory(story);
+    const row = createEl("article", { class: "story-row" });
+    row.append(
+      createEl("div", { class: "story-head" }, [
+        createEl("span", { class: "group-code", text: story.code || "H???" }),
+        createEl("strong", { class: "story-title", text: story.title }),
+        createEl("span", { class: "badge", text: story.status }),
+      ]),
+      createEl("div", { class: "story-meta" }, [
+        createEl("span", { class: "tree-tag", text: epic ? `${epic.code} · ${epic.title}` : "sin épica" }),
+        createEl("span", { class: "tree-tag", text: `origen: ${story.origin}` }),
+      ])
+    );
+    if (story.description) {
+      row.append(createEl("p", { class: "prose story-description", text: story.description }));
+    }
+    return row;
+  }
+
+  function buildCriterionRow(criterion, allCriteria, view) {
+    const row = createEl("article", { class: `criterion-row criterion-${criterion.status}` });
+    row.append(
+      createEl("div", { class: "criterion-head" }, [
+        createEl("span", { class: "group-code", text: criterion.code }),
+        createEl("span", { class: `badge status-criterion-${criterion.status}`, text: criterion.status }),
+      ]),
+      createEl("p", { class: "criterion-text", text: criterion.text })
+    );
+
+    if (criterion.status === "superseded" && criterion.superseded_by) {
+      const replacement = allCriteria.find((entry) => entry.id === criterion.superseded_by);
+      row.append(
+        createEl("p", { class: "criterion-trace", text: `Sustituido por ${replacement?.code || criterion.superseded_by}` })
+      );
+    }
+
+    if (state.editMode && criterion.status === "active") {
+      const actions = createEl("div", { class: "criterion-actions" });
+      const supersede = createEl("button", { class: "btn-secondary btn-sm", text: "Sustituir" });
+      supersede.addEventListener("click", async () => {
+        const text = window.prompt(`Nuevo texto para ${criterion.code} (el criterio anterior queda en el historial):`);
+        if (!text || text.trim() === "") return;
+        await submitEdit(`/api/criteria/${criterion.id}`, "PATCH", {
+          expectedVersion: criterion.version,
+          text: text.trim(),
+        });
+      });
+      const retire = createEl("button", { class: "btn-danger btn-sm", text: "Retirar" });
+      retire.addEventListener("click", async () => {
+        const reason = window.prompt(`Motivo para retirar ${criterion.code}:`);
+        if (!reason || reason.trim() === "") return;
+        await submitEdit(`/api/criteria/${criterion.id}`, "DELETE", {
+          expectedVersion: criterion.version,
+          reason: reason.trim(),
+        });
+      });
+      actions.append(supersede, retire);
+      row.append(actions);
+    }
+
+    return row;
+  }
+
+  function buildDecisionRow(decision) {
+    const row = createEl("details", { class: "decision-row" });
+    row.append(
+      createEl("summary", { class: "decision-summary" }, [
+        createEl("span", { class: "group-code", text: decision.code }),
+        createEl("strong", { text: decision.title }),
+        createEl("span", { class: "badge", text: decision.status }),
+      ])
+    );
+    const body = createEl("div", { class: "decision-body" });
+    body.append(
+      createEl("p", { class: "prose" }, [createEl("strong", { text: "Pregunta: " }), decision.question]),
+      createEl("p", { class: "prose" }, [createEl("strong", { text: "Respuesta: " }), decision.answer])
+    );
+    if (decision.alternatives) {
+      body.append(createEl("p", { class: "prose" }, [createEl("strong", { text: "Alternativas: " }), decision.alternatives]));
+    }
+    if (decision.impact) {
+      body.append(createEl("p", { class: "prose" }, [createEl("strong", { text: "Impacto: " }), decision.impact]));
+    }
+    row.append(body);
+    return row;
+  }
+
+  function buildReviewsSection(view) {
+    const reviews = view.reviews ?? [];
+    const nodes = [];
+
+    const latest = view.latestReview;
+    if (latest) {
+      const latestBox = createEl("div", { class: "review-latest" });
+      latestBox.append(
+        createEl("div", { class: "review-latest-head" }, [
+          createEl("strong", { text: `Ciclo ${latest.cycle} · ${latest.status}` }),
+          createEl("span", { class: "surface-sub", text: formatDate(latest.requested_at) }),
+        ]),
+        createEl("p", { class: "prose review-evidence", text: latest.evidence || "Sin evidencia registrada todavía." })
+      );
+      nodes.push(latestBox);
+    } else if (view.increment.status === "pendiente_revision_humana" || view.increment.status === "en_correcciones") {
+      nodes.push(createEl("div", { class: "surface-sub", text: "No se encontró evidencia de implementación." }));
+    }
+
+    if (reviews.length > 0) {
+      const timeline = createEl("div", { class: "review-timeline" });
+      for (const review of reviews) {
+        const entry = createEl("details", { class: "review-entry" });
+        entry.append(
+          createEl("summary", { class: "review-entry-head" }, [
+            createEl("span", { class: "group-code", text: `Ciclo ${review.cycle}` }),
+            createEl("span", { class: `badge status-review-${review.status}`, text: review.status }),
+            createEl("span", { class: "surface-sub", text: formatDate(review.requested_at) }),
+          ])
+        );
+        const body = createEl("div", { class: "review-entry-body" });
+        if (review.evidence) body.append(createEl("p", { class: "prose", text: review.evidence }));
+        if (review.notes) body.append(createEl("p", { class: "prose" }, [createEl("strong", { text: "Notas: " }), review.notes]));
+        for (const finding of review.findings ?? []) {
+          body.append(
+            createEl("div", { class: `finding finding-${finding.status}` }, [
+              createEl("span", { class: "badge badge-warning", text: `${finding.kind} · ${finding.status}` }),
+              createEl("p", { class: "prose", text: finding.description }),
+            ])
+          );
+        }
+        for (const result of review.results ?? []) {
+          body.append(
+            createEl("div", { class: "review-result" }, [
+              createEl("span", { class: "badge badge-quiet", text: "resultado" }),
+              createEl("p", { class: "prose", text: result.summary || result.outcome || JSON.stringify(result) }),
+            ])
+          );
+        }
+        entry.append(body);
+        timeline.append(entry);
       }
-      detail.append(blockers);
+      nodes.push(timeline);
     }
 
-    const stories = createEl("section", { class: "group-section" });
-    stories.append(createEl("h3", { text: `Historias (${view.stories.length})` }));
-    for (const story of view.stories) {
-      stories.append(
-        createEl("div", { class: "group-row" }, [
-          createEl("span", { class: "group-code", text: story.code || "H???" }),
-          document.createTextNode(` ${story.title} `),
-          createEl("span", { class: "badge", text: story.status }),
-        ])
-      );
-    }
-    detail.append(stories);
+    return buildSection("Evidencias y revisiones", nodes.length > 0 ? nodes : [
+      createEl("div", { class: "empty-state", text: "Sin ciclos de revisión todavía." }),
+    ], { count: reviews.length });
+  }
 
-    const criteria = createEl("section", { class: "group-section" });
-    criteria.append(createEl("h3", { text: `Criterios de aceptación (${view.acceptanceCriteria.length})` }));
-    for (const criterion of view.acceptanceCriteria) {
-      criteria.append(
-        createEl("div", { class: "group-row" }, [
-          createEl("span", { class: "group-code", text: criterion.code }),
-          document.createTextNode(` ${criterion.text}`),
-        ])
-      );
-    }
-    detail.append(criteria);
-
-    const decisions = createEl("section", { class: "group-section" });
-    decisions.append(createEl("h3", { text: `Decisiones confirmadas (${view.decisions.length})` }));
-    for (const decision of view.decisions) {
-      decisions.append(
-        createEl("div", { class: "group-row" }, [
-          createEl("span", { class: "group-code", text: decision.code }),
-          createEl("strong", { text: ` ${decision.title}: ` }),
-          document.createTextNode(decision.answer),
-        ])
-      );
-    }
-    detail.append(decisions);
-
+  function buildGroupActions(view) {
+    const group = view.increment;
     const actions = createEl("div", { class: "group-actions" });
+
+    const editToggle = createEl("button", {
+      class: `btn-secondary btn-sm ${state.editMode ? "active" : ""}`,
+      text: state.editMode ? "Salir de edición" : "Modo edición",
+      attrs: { "aria-pressed": String(state.editMode) },
+    });
+    editToggle.addEventListener("click", () => {
+      state.editMode = !state.editMode;
+      renderGroupDetail();
+    });
+    actions.append(editToggle);
 
     if (group.status === "listo_para_aprobacion" || view.drifted) {
       const approve = createEl("button", { class: "btn-primary", text: "Aprobar alcance" });
@@ -628,12 +1282,15 @@ const state = {
         })
       );
       actions.append(accept);
+    }
 
+    if (group.status === "pendiente_revision_humana") {
       const defectBox = createEl("div", { class: "group-defect" });
       const defectInput = createEl("textarea", {
         class: "form-textarea",
         rows: "2",
         placeholder: "Describí el defecto observado (qué criterio falla y cómo se reproduce)",
+        attrs: { "aria-label": "Descripción del defecto" },
       });
       const reportButton = createEl("button", { class: "btn-danger", text: "Reportar defecto" });
       reportButton.addEventListener("click", async () => {
@@ -648,14 +1305,157 @@ const state = {
       actions.append(defectBox);
     }
 
-    if (actions.childElementCount > 0) detail.append(actions);
-    if (group.status === "aprobado" || group.status === "en_implementacion") {
-      detail.append(
+    return actions;
+  }
+
+  function buildEditPanel(view) {
+    const group = view.increment;
+    const panel = createEl("section", { class: "edit-panel" });
+    panel.append(
+      createEl("header", { class: "edit-head" }, [
+        createEl("h3", { text: "Edición manual (opcional)" }),
         createEl("p", {
-          class: "group-hint",
-          text: "ODD puede leer este alcance directamente: «Revisa RequireFlow y continúa con " + group.code + "».",
-        })
-      );
+          class: "surface-sub",
+          text: "El agente organiza el backlog; esto existe solo para ajustes puntuales. Toda edición envía expectedVersion y el dominio rechaza cambios sobre alcances aprobados o desactualizados.",
+        }),
+      ])
+    );
+
+    const refineForm = createEl("form", { class: "edit-form" });
+    refineForm.append(createEl("h4", { text: "Objetivo y exclusiones del grupo" }));
+    const nameInput = createEl("input", { class: "form-input", attrs: { placeholder: "Nombre del grupo", "aria-label": "Nombre del grupo" } });
+    nameInput.value = group.name ?? "";
+    const goalInput = createEl("textarea", { class: "form-textarea", rows: "2", attrs: { placeholder: "Objetivo funcional", "aria-label": "Objetivo del grupo" } });
+    goalInput.value = group.goal ?? "";
+    const exclusionsInput = createEl("textarea", { class: "form-textarea", rows: "2", attrs: { placeholder: "Fuera de alcance", "aria-label": "Exclusiones" } });
+    exclusionsInput.value = group.exclusiones ?? "";
+    const depsInput = createEl("input", { class: "form-input", attrs: { placeholder: "Agregar dependencias por código, ej: G02, G03", "aria-label": "Dependencias a agregar" } });
+    const refineSubmit = createEl("button", { class: "btn-secondary btn-sm", text: "Guardar cambios del grupo" });
+    refineForm.append(nameInput, goalInput, exclusionsInput, depsInput, refineSubmit);
+    refineForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const dependencyCodes = depsInput.value
+        .split(",")
+        .map((code) => code.trim())
+        .filter(Boolean);
+      await submitEdit(`/api/groups/${group.id}`, "PATCH", {
+        expectedVersion: group.version,
+        name: nameInput.value.trim() || undefined,
+        goal: goalInput.value.trim() || undefined,
+        exclusiones: exclusionsInput.value.trim(),
+        addDependencyCodes: dependencyCodes.length > 0 ? dependencyCodes : undefined,
+      });
+    });
+    panel.append(refineForm);
+
+    if (view.stories.length > 0) {
+      panel.append(buildStoryEditor(view));
+    }
+
+    const criterionForm = createEl("form", { class: "edit-form" });
+    criterionForm.append(createEl("h4", { text: "Nuevo criterio de aceptación" }));
+    const criterionInput = createEl("textarea", { class: "form-textarea", rows: "2", attrs: { placeholder: "Condición observable y verificable", "aria-label": "Texto del criterio" } });
+    const criterionSubmit = createEl("button", { class: "btn-secondary btn-sm", text: "Agregar criterio" });
+    criterionForm.append(criterionInput, criterionSubmit);
+    criterionForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = criterionInput.value.trim();
+      if (text === "") {
+        showToast("Escribí el criterio antes de guardarlo.", "error");
+        return;
+      }
+      await submitEdit(`/api/groups/${group.id}/criteria`, "POST", { text });
+    });
+    panel.append(criterionForm);
+
+    const decisionForm = createEl("form", { class: "edit-form" });
+    decisionForm.append(createEl("h4", { text: "Registrar una decisión confirmada" }));
+    const decisionTitle = createEl("input", { class: "form-input", attrs: { placeholder: "Título", "aria-label": "Título de la decisión" } });
+    const decisionQuestion = createEl("input", { class: "form-input", attrs: { placeholder: "Pregunta", "aria-label": "Pregunta de la decisión" } });
+    const decisionAnswer = createEl("textarea", { class: "form-textarea", rows: "2", attrs: { placeholder: "Respuesta confirmada por la persona", "aria-label": "Respuesta de la decisión" } });
+    const decisionSubmit = createEl("button", { class: "btn-secondary btn-sm", text: "Registrar decisión" });
+    decisionForm.append(decisionTitle, decisionQuestion, decisionAnswer, decisionSubmit);
+    decisionForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!decisionTitle.value.trim() || !decisionQuestion.value.trim() || !decisionAnswer.value.trim()) {
+        showToast("Completá título, pregunta y respuesta.", "error");
+        return;
+      }
+      await submitEdit(`/api/groups/${group.id}/decisions`, "POST", {
+        title: decisionTitle.value.trim(),
+        question: decisionQuestion.value.trim(),
+        answer: decisionAnswer.value.trim(),
+      });
+    });
+    panel.append(decisionForm);
+
+    panel.append(
+      createEl("p", {
+        class: "surface-sub edit-footnote",
+        text: "No disponible en esta interfaz: reordenar grupos, mover historias entre grupos y fusionar épicas. Esas operaciones siguen en product-backlog/MCP.",
+      })
+    );
+
+    return panel;
+  }
+
+  function buildStoryEditor(view) {
+    const form = createEl("form", { class: "edit-form" });
+    form.append(createEl("h4", { text: "Editar una historia" }));
+    const select = createEl("select", { class: "form-select", attrs: { "aria-label": "Historia a editar" } });
+    for (const story of view.stories) {
+      const option = createEl("option", { text: `${story.code || "H???"} — ${story.title}` });
+      option.value = story.id;
+      select.append(option);
+    }
+    const titleInput = createEl("input", { class: "form-input", attrs: { placeholder: "Título", "aria-label": "Título de la historia" } });
+    const descriptionInput = createEl("textarea", { class: "form-textarea", rows: "2", attrs: { placeholder: "Descripción", "aria-label": "Descripción de la historia" } });
+    const statusSelect = createEl("select", { class: "form-select", attrs: { "aria-label": "Estado de la historia" } });
+    for (const status of ["captured", "draft", "refined", "ready", "discarded"]) {
+      const option = createEl("option", { text: status });
+      option.value = status;
+      statusSelect.append(option);
+    }
+    const prioritySelect = createEl("select", { class: "form-select", attrs: { "aria-label": "Prioridad de la historia" } });
+    for (const priority of ["low", "medium", "high", "blocker"]) {
+      const option = createEl("option", { text: priority });
+      option.value = priority;
+      prioritySelect.append(option);
+    }
+    const submit = createEl("button", { class: "btn-secondary btn-sm", text: "Guardar historia" });
+
+    let current = view.stories[0];
+    const fill = () => {
+      current = view.stories.find((story) => story.id === select.value) ?? view.stories[0];
+      titleInput.value = current.title ?? "";
+      descriptionInput.value = current.description ?? "";
+      statusSelect.value = current.status ?? "draft";
+      prioritySelect.value = current.priority ?? "medium";
+    };
+    select.addEventListener("change", fill);
+    fill();
+
+    form.append(select, titleInput, descriptionInput, statusSelect, prioritySelect, submit);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await submitEdit(`/api/backlog/items/${current.id}`, "PATCH", {
+        expectedVersion: current.version,
+        title: titleInput.value.trim(),
+        description: descriptionInput.value.trim(),
+        status: statusSelect.value,
+        priority: prioritySelect.value,
+      });
+    });
+    return form;
+  }
+
+  async function submitEdit(endpoint, method, body) {
+    try {
+      await fetchAPI(endpoint, { method, body: JSON.stringify(body) });
+      showToast("Cambio guardado.", "success");
+      await loadGroups();
+    } catch (error) {
+      showToast(error?.message || "No se pudo guardar el cambio.", "error");
     }
   }
 
@@ -673,7 +1473,7 @@ const state = {
     if (messageEl) messageEl.textContent = message;
     if (expectedEl) expectedEl.textContent = expected;
     if (input) input.value = "";
-    modal?.classList.add("active");
+    modal?.classList.add("open");
     input?.focus();
   }
 
@@ -722,7 +1522,7 @@ const state = {
       }
       const action = pendingConfirmation;
       pendingConfirmation = null;
-      document.getElementById("modalConfirm")?.classList.remove("active");
+      document.getElementById("modalConfirm")?.classList.remove("open");
       await action.onConfirm(typed);
     });
   }
@@ -1369,6 +2169,7 @@ const state = {
     initSearchInputs();
     initIdeaCapture();
     initGroupView();
+    initOverviewMap();
     initConfirmModal();
     initLiveTimers();
     await loadProjects();
