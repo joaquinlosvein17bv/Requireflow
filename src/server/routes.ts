@@ -78,9 +78,8 @@ import {
 import {
   acceptIncrement,
   deliverCorrection,
-  listFindings,
-  listReviewResults,
-  listReviews,
+  getIncrementReviews,
+  rejectCorrection,
   reportDefect,
   startImplementation,
   submitImplementationEvidence,
@@ -662,7 +661,7 @@ export async function handleApiRoute(
     }
 
     // --- Individual group ---
-    const groupAction = path.match(/^\/api\/groups\/([^/]+)\/([a-z]+)$/);
+    const groupAction = path.match(/^\/api\/groups\/([^/]+)\/([a-z-]+)$/);
     if (groupAction && method === "POST") {
       const groupId = groupAction[1]!;
       const action = groupAction[2]!;
@@ -741,8 +740,31 @@ export async function handleApiRoute(
         }
         case "corrections": {
           const evidence = requireText(body.evidence, "evidence", 20_000);
+          const findingIds = Array.isArray(body.findingIds)
+            ? (body.findingIds as string[]).filter((id): id is string => typeof id === "string")
+            : undefined;
           return jsonResponse(
-            deliverCorrection({ incrementId: group.id, actor: "agent:odd", evidence }, db)
+            deliverCorrection(
+              { incrementId: group.id, actor: "agent:odd", evidence, findingIds },
+              db
+            )
+          );
+        }
+        case "reject-correction": {
+          const reason = requireText(body.reason, "reason", 1_000);
+          const findingIds = Array.isArray(body.findingIds)
+            ? (body.findingIds as string[]).filter((id): id is string => typeof id === "string")
+            : [];
+          return jsonResponse(
+            rejectCorrection(
+              {
+                incrementId: group.id,
+                actor: actorFromRequest(req),
+                findingIds,
+                reason,
+              },
+              db
+            )
           );
         }
         case "criteria": {
@@ -786,11 +808,7 @@ export async function handleApiRoute(
 
       if (method === "GET") {
         const view = getIncrementView(group.id, db);
-        const reviews = listReviews(group.id, db).map((review) => ({
-          ...review,
-          findings: listFindings(review.id, db),
-          results: listReviewResults(review.id, db),
-        }));
+        const reviews = getIncrementReviews(group.id, db);
         // Additive history: the active-only contract of `acceptanceCriteria`
         // stays untouched for existing consumers, and the dashboard can render
         // superseded/retired criteria with full traceability.

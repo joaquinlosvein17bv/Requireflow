@@ -109,7 +109,7 @@ describe("Deterministic V2 backlog Markdown export", () => {
 
     const readme = fs.readFileSync(path.join(outDir, "README.md"), "utf8");
     expect(readme).toContain("Cartas Digitales");
-    expect(readme).toContain("Schema version:** v7");
+    expect(readme).toContain("Schema version:** v8");
     expect(readme).toContain("[G01](./groups/G01.md)");
 
     const groupFile = fs.readFileSync(path.join(outDir, "groups", "G01.md"), "utf8");

@@ -543,6 +543,38 @@ function migrateGroupsAndReviews(db: Database): void {
   );
 }
 
+/**
+ * Links a delivered correction (a review cycle) to the specific findings it
+ * addresses, so a correction never marks every open defect as fixed.
+ *
+ * Attempts are never deleted: a rejected correction keeps its row with
+ * `status = 'rejected'`, the reason and the date, and the finding returns to
+ * `pending` because its derived state depends on the latest delivered attempt.
+ */
+function migrateFindingCorrectionTracking(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS review_finding_corrections (
+      id TEXT PRIMARY KEY,
+      finding_id TEXT NOT NULL,
+      review_id TEXT NOT NULL,
+      delivered_at TEXT NOT NULL,
+      rejected_at TEXT,
+      rejected_by TEXT,
+      rejected_reason TEXT,
+      status TEXT NOT NULL DEFAULT 'delivered' CHECK (status IN ('delivered', 'rejected')),
+      FOREIGN KEY(finding_id) REFERENCES review_findings(id) ON DELETE CASCADE,
+      FOREIGN KEY(review_id) REFERENCES increment_reviews(id) ON DELETE CASCADE,
+      UNIQUE(finding_id, review_id)
+    );
+  `);
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_finding_corrections_finding ON review_finding_corrections(finding_id)"
+  );
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_finding_corrections_review ON review_finding_corrections(review_id)"
+  );
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -578,6 +610,11 @@ export const MIGRATIONS: Migration[] = [
     version: 7,
     name: "groups_criteria_reviews_and_scope_snapshots",
     run: migrateGroupsAndReviews,
+  },
+  {
+    version: 8,
+    name: "finding_correction_tracking",
+    run: migrateFindingCorrectionTracking,
   },
 ];
 

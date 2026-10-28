@@ -116,6 +116,16 @@ describe("Supervision-first dashboard", () => {
     expect(source).toContain("criterion.superseded_by");
   });
 
+  it("renders finding tracking states and the human rejection control", () => {
+    const source = readSource();
+
+    expect(source).toContain("FINDING_STATE_LABELS");
+    expect(source).toContain("Corrección entregada — pendiente de revisión");
+    expect(source).toContain("Resuelto y aceptado");
+    expect(source).toContain("reject-correction");
+    expect(source).toContain("finding.corrections");
+  });
+
   it("explains why a group cannot be executed", () => {
     const source = readSource();
 

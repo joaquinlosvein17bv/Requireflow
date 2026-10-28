@@ -45,6 +45,12 @@ const GROUP_FILTERS = [
   { key: "blocked", label: "Bloqueados", statuses: ["bloqueado"] },
 ];
 
+const FINDING_STATE_LABELS = {
+  pending: "Pendiente",
+  correction_delivered: "Corrección entregada — pendiente de revisión",
+  resolved: "Resuelto y aceptado",
+};
+
   // --- API Client ---
   // The mutation token is issued per server process and read from the
   // origin-restricted health endpoint; another site cannot read it.
@@ -1203,12 +1209,57 @@ const GROUP_FILTERS = [
         if (review.evidence) body.append(createEl("p", { class: "prose", text: review.evidence }));
         if (review.notes) body.append(createEl("p", { class: "prose" }, [createEl("strong", { text: "Notas: " }), review.notes]));
         for (const finding of review.findings ?? []) {
-          body.append(
-            createEl("div", { class: `finding finding-${finding.status}` }, [
-              createEl("span", { class: "badge badge-warning", text: `${finding.kind} · ${finding.status}` }),
-              createEl("p", { class: "prose", text: finding.description }),
-            ])
-          );
+          const tracking = finding.tracking || "pending";
+          const findingBox = createEl("div", { class: `finding finding-${tracking}` }, [
+            createEl("div", { class: "finding-head" }, [
+              createEl("span", { class: "badge", text: finding.kind }),
+              createEl("span", {
+                class: `badge finding-state finding-state-${tracking}`,
+                text: FINDING_STATE_LABELS[tracking] || tracking,
+              }),
+            ]),
+            createEl("p", { class: "prose", text: finding.description }),
+          ]);
+
+          const corrections = finding.corrections ?? [];
+          if (corrections.length > 0) {
+            const history = createEl("div", { class: "finding-history" });
+            history.append(createEl("h5", { text: "Intentos de corrección" }));
+            for (const correction of corrections) {
+              const attempt = createEl("div", { class: "finding-attempt" }, [
+                createEl("span", {
+                  class: `badge ${correction.status === "delivered" ? "badge-success" : "badge-warning"}`,
+                  text: correction.status === "delivered" ? "entregada" : "rechazada",
+                }),
+                createEl("span", {
+                  class: "surface-sub",
+                  text: `Ciclo ${correction.cycle} · ${formatDate(correction.delivered_at)}`,
+                }),
+              ]);
+              if (correction.rejected_reason) {
+                attempt.append(
+                  createEl("span", { class: "surface-sub", text: `Motivo: ${correction.rejected_reason}` })
+                );
+              }
+              history.append(attempt);
+            }
+            findingBox.append(history);
+          }
+
+          if (tracking === "correction_delivered" && view.increment.status === "pendiente_revision_humana") {
+            const reject = createEl("button", { class: "btn-danger btn-sm finding-reject", text: "Rechazar corrección" });
+            reject.addEventListener("click", async () => {
+              const reason = window.prompt("Motivo del rechazo (queda en el historial):");
+              if (!reason || reason.trim() === "") return;
+              await submitEdit(`/api/groups/${view.increment.id}/reject-correction`, "POST", {
+                findingIds: [finding.id],
+                reason: reason.trim(),
+              });
+            });
+            findingBox.append(reject);
+          }
+
+          body.append(findingBox);
         }
         for (const result of review.results ?? []) {
           body.append(

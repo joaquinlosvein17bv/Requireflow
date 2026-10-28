@@ -141,7 +141,7 @@ describe("V2 storage isolation from the legacy database", () => {
     const file = path.join(tempDir(), "v2-behind.db");
     const created = createDatabase(file);
     // Simulate a V2 file created by a previous build (schema v6).
-    created.run("DELETE FROM _schema_migrations WHERE version = 7");
+    created.run("DELETE FROM _schema_migrations WHERE version >= 7");
     created.close();
 
     const inspection = inspectDatabase(file);

@@ -2306,3 +2306,58 @@ summary:focus-visible {
   flex: 1;
   min-height: 40px;
 }
+
+/* Finding tracking: pending / correction delivered / resolved */
+.finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.finding-state-pending {
+  color: var(--danger-hover);
+  background: var(--danger-bg);
+  border: 1px solid rgba(218, 54, 51, 0.35);
+}
+
+.finding-state-correction_delivered {
+  color: var(--purple);
+  background: var(--purple-bg);
+  border: 1px solid rgba(137, 87, 229, 0.4);
+}
+
+.finding-state-resolved {
+  color: var(--success);
+  background: var(--success-bg);
+  border: 1px solid rgba(46, 160, 67, 0.4);
+}
+
+.finding-history {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.finding-history h5 {
+  margin: 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.finding-attempt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+}
+
+.finding-reject {
+  margin-top: 8px;
+}

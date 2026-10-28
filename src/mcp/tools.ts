@@ -53,6 +53,7 @@ import {
 } from "../domain/backlog/increment.ts";
 import {
   deliverCorrection,
+  getIncrementReviews,
   reportDefect,
   startImplementation,
   submitImplementationEvidence,
@@ -467,6 +468,7 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
               approvedRevision: group.approved_revision,
               approvedAt: group.approved_at,
               approvedBy: group.approved_by,
+              reviews: getIncrementReviews(group.id, db),
             };
           })
       )
@@ -862,6 +864,12 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
         {
           group: z.string().min(1),
           evidence: z.string().min(1),
+          findingIds: z
+            .array(z.string().min(1))
+            .optional()
+            .describe(
+              "IDs of the findings this correction actually addresses. Omit them when there is no verifiable association: nothing is marked as corrected by default"
+            ),
           projectId: z.string().optional(),
         },
         (args) =>
@@ -870,7 +878,12 @@ export function registerMcpTools(server: McpServer, db: Database = getDatabase()
             const group = resolveIncrement(pId, args.group, db);
             if (!group) throw new Error(`Group not found: ${args.group}`);
             return deliverCorrection(
-              { incrementId: group.id, actor: "agent:odd", evidence: args.evidence },
+              {
+                incrementId: group.id,
+                actor: "agent:odd",
+                evidence: args.evidence,
+                findingIds: args.findingIds,
+              },
               db
             );
           })

@@ -65,7 +65,7 @@ describe("Migration v1 -> v6 on a legacy database", () => {
     const version = db
       .query("SELECT MAX(version) v FROM _schema_migrations")
       .get() as { v: number };
-    expect(Number(version.v)).toBe(7);
+    expect(Number(version.v)).toBe(8);
 
     const tables = (
       db

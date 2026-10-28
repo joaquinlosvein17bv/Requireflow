@@ -48,6 +48,38 @@ export interface ReviewResult {
   created_at: string;
 }
 
+export interface FindingCorrection {
+  id: string;
+  finding_id: string;
+  review_id: string;
+  /** Cycle of the review that delivered this correction attempt. */
+  cycle: number;
+  delivered_at: string;
+  rejected_at: string | null;
+  rejected_by: string | null;
+  rejected_reason: string | null;
+  status: "delivered" | "rejected";
+}
+
+/**
+ * Visible state derived from existing data, without inventing a new
+ * `review_findings.status` value:
+ * - `pending`: still needs work (never corrected, or its correction was rejected).
+ * - `correction_delivered`: a correction for this specific finding is awaiting human review.
+ * - `resolved`: the human accepted the group and the defect is verified.
+ */
+export type FindingTrackingState = "pending" | "correction_delivered" | "resolved";
+
+export interface FindingWithTracking extends ReviewFinding {
+  corrections: FindingCorrection[];
+  tracking: FindingTrackingState;
+}
+
+export interface IncrementReviewWithFindings extends IncrementReview {
+  findings: FindingWithTracking[];
+  results: ReviewResult[];
+}
+
 function requireIncrement(id: string, db: Database): Increment {
   const increment = getIncrement(id, db);
   if (!increment) throw new PlanValidationError(`Group not found with ID: ${id}`);
@@ -78,6 +110,57 @@ export function listFindings(
   return db
     .query("SELECT * FROM review_findings WHERE review_id = ? ORDER BY created_at ASC")
     .all(reviewId) as ReviewFinding[];
+}
+
+export function listFindingCorrections(
+  findingId: string,
+  db: Database = getDatabase()
+): FindingCorrection[] {
+  return db
+    .query(
+      `SELECT c.*, r.cycle AS cycle
+         FROM review_finding_corrections c
+         JOIN increment_reviews r ON r.id = c.review_id
+        WHERE c.finding_id = ?
+        ORDER BY c.delivered_at ASC, r.cycle ASC`
+    )
+    .all(findingId) as FindingCorrection[];
+}
+
+export function deriveFindingTracking(
+  finding: ReviewFinding,
+  corrections: FindingCorrection[]
+): FindingTrackingState {
+  if (finding.status === "resolved") return "resolved";
+  if (corrections.some((correction) => correction.status === "delivered")) {
+    return "correction_delivered";
+  }
+  return "pending";
+}
+
+/**
+ * Reviews with their findings, correction attempts and derived tracking state.
+ * This is the single shape used by the HTTP API, MCP and the dashboard.
+ */
+export function getIncrementReviews(
+  incrementId: string,
+  db: Database = getDatabase()
+): IncrementReviewWithFindings[] {
+  return listReviews(incrementId, db).map((review) => {
+    const findings = listFindings(review.id, db).map((finding) => {
+      const corrections = listFindingCorrections(finding.id, db);
+      return {
+        ...finding,
+        corrections,
+        tracking: deriveFindingTracking(finding, corrections),
+      };
+    });
+    return {
+      ...review,
+      findings,
+      results: listReviewResults(review.id, db),
+    };
+  });
 }
 
 export function listReviewResults(
@@ -268,6 +351,46 @@ export interface DeliverCorrectionInput {
   actor: string;
   evidence?: string;
   notes?: string;
+  /**
+   * Findings this correction actually addresses. Only these can show
+   * "correction delivered"; omitting them marks nothing (no assumptions).
+   */
+  findingIds?: string[];
+}
+
+interface CorrectableFindingRow {
+  id: string;
+  status: string;
+  review_increment_id: string;
+}
+
+function requireCorrectableFindings(
+  incrementId: string,
+  findingIds: string[],
+  db: Database
+): string[] {
+  const unique = [...new Set(findingIds)];
+  for (const findingId of unique) {
+    const row = db
+      .query(
+        `SELECT f.id, f.status, r.increment_id AS review_increment_id
+           FROM review_findings f
+           JOIN increment_reviews r ON r.id = f.review_id
+          WHERE f.id = ?`
+      )
+      .get(findingId) as CorrectableFindingRow | null;
+
+    if (!row) {
+      throw new PlanValidationError(`Finding ${findingId} does not exist`);
+    }
+    if (row.review_increment_id !== incrementId) {
+      throw new PlanValidationError(`Finding ${findingId} does not belong to this group`);
+    }
+    if (row.status !== "open") {
+      throw new PlanValidationError(`Finding ${findingId} is already resolved`);
+    }
+  }
+  return unique;
 }
 
 /** ODD fixes the reported defect and hands the same group back for review. */
@@ -281,6 +404,8 @@ export function deliverCorrection(
       `Group ${increment.code} is '${increment.status}'. A correction can only be delivered while it is 'en_correcciones'.`
     );
   }
+
+  const findingIds = requireCorrectableFindings(input.incrementId, input.findingIds ?? [], db);
 
   const timestamp = nowIso();
   const review: IncrementReview = {
@@ -316,6 +441,27 @@ export function deliverCorrection(
       ]
     );
     setIncrementStatus(increment.id, "pendiente_revision_humana", input.actor, db);
+    for (const findingId of findingIds) {
+      db.run(
+        `INSERT INTO review_finding_corrections (
+           id, finding_id, review_id, delivered_at, status
+         ) VALUES (?, ?, ?, ?, 'delivered')`,
+        [crypto.randomUUID(), findingId, review.id, timestamp]
+      );
+      appendChange(
+        {
+          projectId: increment.project_id,
+          entityType: "increment",
+          entityId: increment.id,
+          action: "group.correction_linked",
+          actor: input.actor,
+          from: increment.status,
+          to: "pendiente_revision_humana",
+          payload: { cycle: review.cycle, findingId },
+        },
+        db
+      );
+    }
     appendChange(
       {
         projectId: increment.project_id,
@@ -325,13 +471,125 @@ export function deliverCorrection(
         actor: input.actor,
         from: increment.status,
         to: "pendiente_revision_humana",
-        payload: { cycle: review.cycle },
+        payload: { cycle: review.cycle, findings: findingIds.length },
       },
       db
     );
   }).immediate();
 
   return review;
+}
+
+export interface RejectCorrectionInput {
+  incrementId: string;
+  actor: string;
+  findingIds: string[];
+  reason: string;
+}
+
+export interface RejectCorrectionResult {
+  review: IncrementReview;
+  rejected: FindingCorrection[];
+}
+
+/**
+ * The human rejects a delivered correction. The rejected attempts stay in the
+ * history with their reason, the affected findings return to `pending`, and the
+ * group goes back to `en_correcciones`. It never creates a new finding by
+ * itself and never resolves anything.
+ */
+export function rejectCorrection(
+  input: RejectCorrectionInput,
+  db: Database = getDatabase()
+): RejectCorrectionResult {
+  const increment = requireIncrement(input.incrementId, db);
+  if (increment.status !== "pendiente_revision_humana") {
+    throw new PlanValidationError(
+      `Group ${increment.code} is '${increment.status}'. A correction can only be rejected while it is 'pendiente_revision_humana'.`
+    );
+  }
+  const review = latestReview(increment.id, db);
+  if (!review || review.status !== "pending") {
+    throw new PlanValidationError(`Group ${increment.code} has no pending review to reject`);
+  }
+
+  const reason = assertConfirmedText(input.reason, "reason", 1_000);
+  const findingIds = [...new Set(input.findingIds)];
+  if (findingIds.length === 0) {
+    throw new PlanValidationError("At least one finding must be rejected");
+  }
+
+  const timestamp = nowIso();
+  const rejected: FindingCorrection[] = [];
+
+  db.transaction(() => {
+    for (const findingId of findingIds) {
+      const finding = db
+        .query(
+          `SELECT f.id, r.increment_id AS review_increment_id
+             FROM review_findings f
+             JOIN increment_reviews r ON r.id = f.review_id
+            WHERE f.id = ?`
+        )
+        .get(findingId) as { id: string; review_increment_id: string } | null;
+
+      if (!finding || finding.review_increment_id !== increment.id) {
+        throw new PlanValidationError(`Finding ${findingId} does not belong to this group`);
+      }
+
+      const attempt = db
+        .query(
+          `SELECT c.*, r.cycle AS cycle
+             FROM review_finding_corrections c
+             JOIN increment_reviews r ON r.id = c.review_id
+            WHERE c.finding_id = ? AND c.review_id = ? AND c.status = 'delivered'`
+        )
+        .get(findingId, review.id) as FindingCorrection | null;
+
+      if (!attempt) {
+        throw new PlanValidationError(
+          `Finding ${findingId} has no delivered correction in cycle ${review.cycle} to reject`
+        );
+      }
+
+      db.run(
+        `UPDATE review_finding_corrections
+            SET status = 'rejected', rejected_at = ?, rejected_by = ?, rejected_reason = ?
+          WHERE id = ?`,
+        [timestamp, input.actor, reason, attempt.id]
+      );
+
+      rejected.push({
+        ...attempt,
+        status: "rejected",
+        rejected_at: timestamp,
+        rejected_by: input.actor,
+        rejected_reason: reason,
+      });
+
+      appendChange(
+        {
+          projectId: increment.project_id,
+          entityType: "increment",
+          entityId: increment.id,
+          action: "group.correction_rejected",
+          actor: input.actor,
+          from: "pendiente_revision_humana",
+          to: "en_correcciones",
+          payload: { cycle: review.cycle, findingId, reason },
+        },
+        db
+      );
+    }
+
+    db.run(
+      "UPDATE increment_reviews SET status = 'changes_requested', decided_at = ?, decided_by = ?, version = version + 1 WHERE id = ?",
+      [timestamp, input.actor, review.id]
+    );
+    setIncrementStatus(increment.id, "en_correcciones", input.actor, db);
+  }).immediate();
+
+  return { review: { ...review, status: "changes_requested" }, rejected };
 }
 
 export interface AcceptIncrementInput {
