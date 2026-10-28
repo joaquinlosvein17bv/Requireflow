@@ -59,6 +59,7 @@ import {
 import { PlanValidationError } from "../domain/backlog/scope.ts";
 import {
   addAcceptanceCriterion,
+  listAcceptanceCriteria,
   recordDecision,
   retireAcceptanceCriterion,
   supersedeAcceptanceCriterion,
@@ -790,7 +791,15 @@ export async function handleApiRoute(
           findings: listFindings(review.id, db),
           results: listReviewResults(review.id, db),
         }));
-        return jsonResponse({ ...view, reviews });
+        // Additive history: the active-only contract of `acceptanceCriteria`
+        // stays untouched for existing consumers, and the dashboard can render
+        // superseded/retired criteria with full traceability.
+        const acceptanceCriteriaHistory = listAcceptanceCriteria(
+          group.id,
+          { includeInactive: true },
+          db,
+        );
+        return jsonResponse({ ...view, reviews, acceptanceCriteriaHistory });
       }
 
       if (method === "PATCH") {

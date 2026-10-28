@@ -107,6 +107,15 @@ describe("Supervision-first dashboard", () => {
     expect(source).toContain("text: story.title");
   });
 
+  it("renders the full criteria history with traceability", () => {
+    const source = readSource();
+
+    expect(source).toContain("view.acceptanceCriteriaHistory ?? view.acceptanceCriteria");
+    expect(source).toContain("Sustituidos");
+    expect(source).toContain("Retirados");
+    expect(source).toContain("criterion.superseded_by");
+  });
+
   it("explains why a group cannot be executed", () => {
     const source = readSource();
 

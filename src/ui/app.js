@@ -953,7 +953,7 @@ const GROUP_FILTERS = [
     }
 
     const group = view.increment;
-    const criteria = view.acceptanceCriteria ?? [];
+    const criteria = view.acceptanceCriteriaHistory ?? view.acceptanceCriteria ?? [];
     const activeCriteria = criteria.filter((criterion) => criterion.status === "active");
     const supersededCriteria = criteria.filter((criterion) => criterion.status === "superseded");
     const retiredCriteria = criteria.filter((criterion) => criterion.status === "retired");
